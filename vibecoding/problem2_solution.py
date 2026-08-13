@@ -184,24 +184,17 @@ class Q2RoutePreprocessor:
             else:
                 stop_time_at[i] = STOP_TIME_NO_REFUEL
 
-        # 累计飞行时间和距离（浮点，不取整）
-        time_to_pos = [0.0] * len(path)
+        # 累计距离（浮点，用于客座公里）
         dist_to_pos = [0.0] * len(path)
-        cum_time = 0.0
         cum_dist = 0.0
-
         for i in range(1, len(path)):
-            d = distances[path[i - 1]][path[i]]
-            flight_t = d / speed * 60.0  # 转为分钟
-            cum_time += flight_t
-            time_to_pos[i] = cum_time
-            cum_dist += d
+            cum_dist += distances[path[i - 1]][path[i]]
             dist_to_pos[i] = cum_dist
-            if i < len(path) - 1:
-                cum_time += stop_time_at.get(i, 0)
 
-        # 总浮点时间（不取整）
-        total_float_time = time_to_pos[-1]
+        # 航段飞行时间（分钟）：逐段累加后统一向上取整，
+        # 避免“累计时间大数相减”引入浮点误差导致多取整1分钟
+        def segment_minutes(i):
+            return distances[path[i]][path[i + 1]] / speed * 60.0
 
         # 设施位置：路径中所有海上设施（含加油中转点中也是设施的）
         facility_pos = {}
@@ -217,9 +210,16 @@ class Q2RoutePreprocessor:
         dist_from = {}
 
         for f, pos in facility_pos.items():
-            time_to[f] = math.ceil(time_to_pos[pos])
-            st = stop_time_at.get(pos, 0)
-            time_from[f] = math.ceil(total_float_time - time_to_pos[pos] - st)
+            flight_to = sum(segment_minutes(i) for i in range(pos))
+            stops_to = sum(stop_time_at.get(i, 0) for i in range(1, pos))
+            time_to[f] = math.ceil(flight_to + stops_to)
+
+            flight_from = sum(segment_minutes(i)
+                              for i in range(pos, len(path) - 1))
+            stops_from = sum(stop_time_at.get(i, 0)
+                             for i in range(pos + 1, len(path) - 1))
+            time_from[f] = math.ceil(flight_from + stops_from)
+
             dist_to[f] = dist_to_pos[pos]
             dist_from[f] = route.total_distance - dist_to_pos[pos]
 
@@ -233,8 +233,11 @@ class Q2RoutePreprocessor:
                 pos1 = facility_pos[f1]
                 pos2 = facility_pos[f2]
                 if pos1 < pos2:
-                    st1 = stop_time_at.get(pos1, 0)
-                    t_between = math.ceil(time_to_pos[pos2] - time_to_pos[pos1] - st1)
+                    flight_between = sum(segment_minutes(i)
+                                         for i in range(pos1, pos2))
+                    stops_between = sum(stop_time_at.get(i, 0)
+                                        for i in range(pos1 + 1, pos2))
+                    t_between = math.ceil(flight_between + stops_between)
                     d_between = dist_to_pos[pos2] - dist_to_pos[pos1]
                     shuttle_info[(f1, f2)] = {'time': t_between, 'dist': d_between}
 
