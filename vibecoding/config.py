@@ -25,6 +25,10 @@ if DATA_DIR is None:
 FIGURES_DIR = os.path.join(PROJECT_DIR, 'figures', 'Problem1')
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output', 'Problem1')
 
+# Problem2 路径
+FIGURES_DIR_Q2 = os.path.join(PROJECT_DIR, 'figures', 'Problem2')
+OUTPUT_DIR_Q2 = os.path.join(PROJECT_DIR, 'output', 'Problem2')
+
 # ==================== 机型参数 ====================
 AIRCRAFT = {
     'T1': {'seats': 12, 'speed': 250, 'fuel_rate': 3.4, 'tank': 1000, 'min_reserve': 150},

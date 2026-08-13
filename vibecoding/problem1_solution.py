@@ -6,8 +6,9 @@
 创新点:
   1. 加油中转点嵌入：当路径燃油不可行时，自动插入加油设施作为中转站
   2. 节省算法路径生成：基于Clarke-Wright节省值排序生成多设施路径
-  3. 字典序多目标优化：先最小化飞机使用时间，再优化油耗和在途时间
+  3. 字典序多目标优化：按题目优先级 time→transit→seat_util→fuel 四层优化
   4. 起点感知需求约束：LAND人员可选任意机场，指定机场人员必须匹配
+  5. Dinkelbach迭代：将分数目标 max(pass_km/seat_km) 线性化为 max(pass_km-λ×seat_km)
 项目: 2026策联杯 B题
 """
 
@@ -215,10 +216,23 @@ class RouteGenerator:
 # ==================== COPT求解器 ====================
 class COPTSolver:
     """
-    COPT MIP求解器：集合划分 + 字典序多目标优化
-    创新点3: 字典序多目标——先最小化飞机使用时间，再优化油耗和在途时间
+    COPT MIP求解器：集合划分 + 字典序四目标优化
+    创新点3: 使用COPT setObjectiveN按题目优先级实现四层字典序优化
+      - 优先级10: 最小化总飞机使用时间（主要考核目标）
+      - 优先级7:  最小化人员总在途时间（重要因素）
+      - 优先级4:  最大化座位利用率（Dinkelbach线性化: max pass_km/seat_km）
+      - 优先级1:  最小化总燃油消耗量（其他因素）
     创新点4: 起点感知需求约束——指定机场人员必须由该机场路径服务
+    创新点5: Dinkelbach迭代求解分数目标 pass_km/seat_km
+      座位利用率 = pass_km / seat_km 是分数目标，无法直接作为MIP目标。
+      Dinkelbach算法将其线性化为 max(pass_km - λ×seat_km)，通过迭代收敛λ。
     """
+
+    # Dinkelbach参数
+    DINKELBACH_MAX_ITERS = 3        # 最大迭代次数
+    DINKELBACH_TOL = 0.002          # 收敛阈值
+    LAMBDA_INIT = 0.45              # 初始利用率估计
+    TIME_LIMITS = [300, 300, 600]   # 每次迭代的求解时间限制(秒)
 
     @staticmethod
     def _has_solution(model):
@@ -234,25 +248,79 @@ class COPTSolver:
 
     def solve(self, routes, demands_by_facility):
         """
-        求解集合划分MIP（COPT原生多目标字典序优化）
+        求解集合划分MIP（Dinkelbach迭代 + COPT字典序多目标优化）
 
-        创新点3: 使用COPT setObjectiveN实现字典序多目标优化
-          - 优先级10(最高): 最小化总飞机使用时间
-          - 优先级5: 最小化总油耗
-          - 优先级1(最低): 最小化人员总在途时间
+        创新点5: Dinkelbach迭代
+          座位利用率 = pass_km / seat_km 是分数目标
+          线性化为: max(pass_km - λ×seat_km)，等价于 min(λ×seat_km - pass_km)
+          迭代更新 λ = pass_km* / seat_km* 直至收敛
 
         返回:
             (selected_routes, assignments)
         """
-        print("\n===== COPT MIP 求解 =====")
+        print("\n===== COPT MIP 求解 (Dinkelbach迭代) =====")
+
+        lam = self.LAMBDA_INIT
+        best_result = None
+        best_util = -1.0
+
+        for iteration in range(self.DINKELBACH_MAX_ITERS):
+            tl = self.TIME_LIMITS[min(iteration, len(self.TIME_LIMITS) - 1)]
+            print(f"\n--- Dinkelbach迭代 {iteration + 1}/{self.DINKELBACH_MAX_ITERS} "
+                  f"(λ={lam:.4f}, 时间限制={tl}s) ---")
+
+            result = self._solve_with_lambda(routes, demands_by_facility, lam, tl)
+            if result is None:
+                print("  无可行解，终止迭代")
+                break
+
+            selected_routes, assignments, pass_km, seat_km = result
+            actual_util = pass_km / seat_km if seat_km > 0 else 0.0
+
+            print(f"  实际座位利用率: {actual_util:.4f} (λ={lam:.4f})")
+            print(f"  pass_km={pass_km:.0f}, seat_km={seat_km:.0f}")
+
+            # 记录最优解
+            if actual_util > best_util:
+                best_util = actual_util
+                best_result = result
+
+            # 检查收敛
+            delta = abs(actual_util - lam)
+            if delta < self.DINKELBACH_TOL:
+                print(f"  Dinkelbach收敛! (|Δλ|={delta:.6f})")
+                break
+
+            # 更新λ
+            lam = actual_util
+
+        if best_result is None:
+            return [], {}
+
+        selected_routes, assignments, _, _ = best_result
+        print(f"\n选中路径: {len(selected_routes)}, 分配人数: {sum(assignments.values())}")
+        print(f"最终座位利用率: {best_util:.4f}")
+        return selected_routes, assignments
+
+    def _solve_with_lambda(self, routes, demands_by_facility, lam, time_limit):
+        """
+        使用给定的λ构建并求解COPT模型
+
+        第三目标: min(λ×seat_km - pass_km)
+          等价于 max(pass_km - λ×seat_km)
+          即Dinkelbach线性化后的分数目标 max(pass_km/seat_km)
+
+        返回:
+            (selected_routes, assignments, pass_km, seat_km) 或 None
+        """
         env = cp.Envr()
         model = env.createModel('Q1_SetPartitioning')
-        model.setParam(cp.COPT.Param.TimeLimit, 180)
-        model.setParam(cp.COPT.Param.RelGap, 0.01)
+        model.setParam(cp.COPT.Param.TimeLimit, time_limit)
+        model.setParam(cp.COPT.Param.RelGap, 0.05)
         model.setParam(cp.COPT.Param.LogToConsole, 0)
 
         # --- 创建变量 ---
-        print("创建变量...")
+        print("  创建变量...")
         x = {}   # x[route_id] = binary: 是否启用该路径
         y = {}   # y[(route_id, facility)] = integer: 该路径运往该设施的人数
 
@@ -267,7 +335,7 @@ class COPTSolver:
         print(f"  变量: {len(x)} binary + {len(y)} integer = {n_vars}")
 
         # --- 约束1: 需求满足 ---
-        print("添加需求约束...")
+        print("  添加约束...")
         for f, info in demands_by_facility.items():
             terms = [y[(r.route_id, f)] for r in routes
                      if f in r.dest_facilities and (r.route_id, f) in y]
@@ -275,7 +343,6 @@ class COPTSolver:
                 model.addConstr(cp.quicksum(terms) == info['total'])
 
         # --- 约束2: 起点感知 ---
-        print("添加起点约束...")
         for f, info in demands_by_facility.items():
             for origin, cnt in info['by_origin'].items():
                 if origin != 'LAND' and cnt > 0:
@@ -286,31 +353,22 @@ class COPTSolver:
                         model.addConstr(cp.quicksum(terms) >= cnt)
 
         # --- 约束3: 容量 ---
-        print("添加容量约束...")
         for r in routes:
             terms = [y[(r.route_id, f)] for f in r.dest_facilities
                      if (r.route_id, f) in y]
             if terms:
                 model.addConstr(cp.quicksum(terms) <= r.capacity * x[r.route_id])
 
-        n_constrs = len(demands_by_facility) + len(routes)
-        print(f"  约束: ~{n_constrs}")
-
         # --- 设置字典序多目标 ---
-        print("\n设置字典序多目标优化...")
-        # 目标0(最高优先级): 最小化总飞机使用时间
+        print("  设置字典序多目标优化...")
+
+        # 目标0(最高优先级): 最小化总飞机使用时间 — 主要考核目标
         time_expr = cp.quicksum(r.time * x[r.route_id] for r in routes)
         model.setObjectiveN(0, time_expr, sense=cp.COPT.MINIMIZE,
                             priority=10, reltol=0.01)
-        print("  [优先级10] 最小化总飞机使用时间")
+        print("    [优先级10] 最小化总飞机使用时间")
 
-        # 目标1: 最小化总油耗
-        fuel_expr = cp.quicksum(r.fuel * x[r.route_id] for r in routes)
-        model.setObjectiveN(1, fuel_expr, sense=cp.COPT.MINIMIZE,
-                            priority=5, reltol=0.05)
-        print("  [优先级5]  最小化总燃油消耗量")
-
-        # 目标2(最低优先级): 最小化人员总在途时间
+        # 目标1: 最小化人员总在途时间 — 重要因素
         transit_terms = []
         for r in routes:
             for f in r.dest_facilities:
@@ -318,23 +376,45 @@ class COPTSolver:
                     transit_terms.append(r.transit_times[f] * y[(r.route_id, f)])
         if transit_terms:
             transit_expr = cp.quicksum(transit_terms)
-            model.setObjectiveN(2, transit_expr, sense=cp.COPT.MINIMIZE,
-                                priority=1, reltol=0.05)
-            print("  [优先级1]  最小化人员总在途时间")
+            model.setObjectiveN(1, transit_expr, sense=cp.COPT.MINIMIZE,
+                                priority=7, reltol=0.03)
+            print("    [优先级7]  最小化人员总在途时间")
+
+        # 目标2: 最大化座位利用率 — Dinkelbach线性化
+        # seat_util = pass_km / seat_km (分数目标)
+        # 线性化: min(λ×seat_km - pass_km) 等价于 max(pass_km - λ×seat_km)
+        passkm_terms = []
+        for r in routes:
+            for f in r.dest_facilities:
+                if (r.route_id, f) in y and f in r.dist_to_facility:
+                    passkm_terms.append(r.dist_to_facility[f] * y[(r.route_id, f)])
+        passkm_expr = cp.quicksum(passkm_terms) if passkm_terms else 0
+        seatkm_expr = cp.quicksum(r.capacity * r.total_distance * x[r.route_id]
+                                  for r in routes)
+        util_expr = lam * seatkm_expr - passkm_expr
+        model.setObjectiveN(2, util_expr, sense=cp.COPT.MINIMIZE,
+                            priority=4, reltol=0.03)
+        print(f"    [优先级4]  最大化座位利用率 (Dinkelbach: λ={lam:.4f})")
+
+        # 目标3(最低优先级): 最小化总燃油消耗量 — 其他因素
+        fuel_expr = cp.quicksum(r.fuel * x[r.route_id] for r in routes)
+        model.setObjectiveN(3, fuel_expr, sense=cp.COPT.MINIMIZE,
+                            priority=1, reltol=0.05)
+        print("    [优先级1]  最小化总燃油消耗量")
 
         # --- 求解 ---
-        print("\n求解中（COPT自动按优先级分层优化）...")
+        print("  求解中（COPT自动按优先级分层优化）...")
         t0 = time_module.time()
         model.solve()
         t1 = time_module.time()
 
         if not self._has_solution(model):
             print(f"  错误: 求解状态={model.status}, 无可行解")
-            return [], {}
+            return None
 
         status_map = {cp.COPT.OPTIMAL: "最优", cp.COPT.TIMEOUT: "时间限制内近似"}
         status_str = status_map.get(model.status, f"状态{model.status}")
-        print(f"  求解完成: {status_str}, 总耗时 {t1-t0:.1f}s")
+        print(f"  求解完成: {status_str}, 耗时 {t1 - t0:.1f}s")
 
         # --- 提取解 ---
         selected_routes = [r for r in routes if x[r.route_id].x > 0.5]
@@ -347,8 +427,16 @@ class COPTSolver:
                         if val > 0:
                             assignments[(r.route_id, f)] = val
 
-        print(f"\n选中路径: {len(selected_routes)}, 分配人数: {sum(assignments.values())}")
-        return selected_routes, assignments
+        # --- 计算pass_km和seat_km用于Dinkelbach更新 ---
+        pass_km = 0.0
+        seat_km = 0.0
+        for r in selected_routes:
+            seat_km += r.capacity * r.total_distance
+            for f in r.dest_facilities:
+                n = assignments.get((r.route_id, f), 0)
+                pass_km += n * r.dist_to_facility.get(f, 0)
+
+        return selected_routes, assignments, pass_km, seat_km
 
 
 # ==================== 结果输出器 ====================
