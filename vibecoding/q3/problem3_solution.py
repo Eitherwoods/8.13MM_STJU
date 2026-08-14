@@ -2,14 +2,17 @@
 """
 文件: problem3_solution.py
 功能: 问题3求解 — 带时间要求的多日排班
-方法: 按天解耦 + 两阶段法（受限路径池 + COPT MIP + 背包化临时任务插入）
+方法: 按天解耦 + 两阶段法（受限路径池 + COPT加权单目标MIP + 背包化临时任务插入）
 创新点:
   C1. 按天解耦定理：多日问题分解为7个独立单日问题
   C2. 时间窗CPM收缩预处理
   C3. 受限路径池+时间窗过滤
   C4. 阶段二临时任务背包化
-  C5. 下界证明+最优性间隙认证
+  C5. 拉格朗日下界+最优性间隙认证（见lagrangian_bound.py）
   C6. 时间扩展网络统一路由+调度+机队（按机型分解约束）
+  C7. 时间窗感知需求聚类路径生成（实验为负结果，方法保留供对比）
+  C8. 反应式列生成（见column_generation.py，边际改善）
+  C9. 加权灵敏度分析Pareto前沿（见pareto_sweep.py，验证权重Pareto最优）
 项目: 2026策联杯 B题
 """
 
@@ -21,6 +24,12 @@ import time as time_module
 from datetime import datetime, timedelta, date
 from collections import defaultdict, Counter
 from typing import List, Dict, Set, Tuple, Optional
+
+# ==================== 模块路径 ====================
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_THIS_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
 
 import coptpy as cp
 from config import (
@@ -46,7 +55,7 @@ RETURN_DEADLINE_HOUR = 20
 TURNAROUND_MINUTES = 30
 TIME_SLOT_MINUTES = 10
 PLANNING_DATES = [date(2026, 8, d) for d in range(3, 10)]
-PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTPUT_DIR_Q3 = os.path.join(PROJECT_DIR, 'output', 'Problem3')
 DEPARTURE_OFFSETS = [0, 30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660]
 
@@ -370,7 +379,7 @@ class Q3RouteGenerator:
 
 # ==================== Q3每日求解器（创新点C6） ====================
 class Q3DailySolver:
-    """单日COPT MIP求解器：集合划分 + 航段容量 + 按机型分解机队约束 + 字典序四目标"""
+    """单日COPT MIP求解器：集合划分 + 航段容量 + 按机型分解机队约束 + 加权单目标(C9验证Pareto最优)"""
 
     DINKELBACH_MAX_ITERS = 2
     DINKELBACH_TOL = 0.005

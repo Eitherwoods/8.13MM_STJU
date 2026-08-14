@@ -23,8 +23,11 @@ from datetime import datetime, date
 from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Optional
 
-# 导入项目模块
-sys.path.insert(0, r'd:\数模\26策联杯\8.13MM_STJU\vibecoding')
+# ==================== 模块路径 ====================
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_THIS_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
 
 import coptpy as cp
 from config import AIRCRAFT, AIRCRAFT_TYPES, AIRPORTS, DATA_DIR
