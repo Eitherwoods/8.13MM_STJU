@@ -23,6 +23,15 @@ import time as time_module
 from collections import defaultdict
 from itertools import permutations
 
+# ==================== 模块路径 ====================
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_VIBECODING_DIR = os.path.dirname(_THIS_DIR)
+if _VIBECODING_DIR not in sys.path:
+    sys.path.insert(0, _VIBECODING_DIR)
+# problem12 子包路径（在同一文件夹内导入 problem1_solution）
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
 import coptpy as cp
 from config import (
     AIRCRAFT, AIRCRAFT_TYPES, AIRPORTS, REFUEL_FACILITIES,
@@ -34,8 +43,6 @@ from base_models import (
     calculate_time, make_route
 )
 
-# 确保能导入problem1_solution中的RouteGenerator
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from problem1_solution import RouteGenerator
 
 

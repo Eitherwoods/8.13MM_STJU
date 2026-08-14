@@ -6,4 +6,5 @@
   - column_generation.py: C8 反应式列生成
   - lagrangian_bound.py:  C9 拉格朗日松弛下界
   - pareto_sweep.py:      C10 加权灵敏度分析 Pareto 前沿
+  - robust_dynamic_test.py: 鲁棒优化与动态调度数值测试
 """

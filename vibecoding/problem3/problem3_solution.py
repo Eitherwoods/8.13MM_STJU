@@ -27,9 +27,13 @@ from typing import List, Dict, Set, Tuple, Optional
 
 # ==================== 模块路径 ====================
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PARENT_DIR = os.path.dirname(_THIS_DIR)
-if _PARENT_DIR not in sys.path:
-    sys.path.insert(0, _PARENT_DIR)
+_VIBECODING_DIR = os.path.dirname(_THIS_DIR)
+if _VIBECODING_DIR not in sys.path:
+    sys.path.insert(0, _VIBECODING_DIR)
+# problem12 子包路径（跨问题导入 problem1_solution/problem2_solution）
+_PROBLEM12_DIR = os.path.join(_VIBECODING_DIR, 'problem12')
+if _PROBLEM12_DIR not in sys.path:
+    sys.path.insert(0, _PROBLEM12_DIR)
 
 import coptpy as cp
 from config import (
@@ -403,8 +407,16 @@ class Q3DailySolver:
                 return False
         return False
 
-    def solve(self, routes_info, day_demands, day, distances):
-        """求解单日MIP，返回(selected_routes_info, yo_vals, yi_vals, ys_vals)或None"""
+    def solve(self, routes_info, day_demands, day, distances, warm_start=None):
+        """
+        求解单日MIP，返回(selected_routes_info, yo_vals, yi_vals, ys_vals)或None
+
+        参数:
+            warm_start: 可选热启动数据（由 ALNS 改进器生成），格式
+                {'selected': {ri_idx}, 'yo': {(ri_idx,f):n},
+                 'yi': {(ri_idx,f):n}, 'ys': {(ri_idx,f1,f2):n}}
+                仅在第一轮 Dinkelbach 迭代中注入 COPT MipStart。
+        """
         print(f"\n===== COPT MIP 求解 (日期={day}, 路径数={len(routes_info)}) =====")
 
         # 分类当日需求
@@ -437,7 +449,8 @@ class Q3DailySolver:
             tl = self.TIME_LIMITS[min(iteration, len(self.TIME_LIMITS) - 1)]
             print(f"\n--- Dinkelbach迭代 {iteration+1}/{self.DINKELBACH_MAX_ITERS} (λ={lam:.4f}, TL={tl}s) ---")
             result = self._solve_with_lambda(routes_info, day, distances,
-                                             ob_by_fac, ib_by_fac, sh_by_od, lam, tl)
+                                             ob_by_fac, ib_by_fac, sh_by_od, lam, tl,
+                                             warm_start=warm_start if iteration == 0 else None)
             if result is None:
                 print("  无可行解，终止")
                 break
@@ -643,8 +656,15 @@ class Q3DailySolver:
         return sel_routes, yo_vals, yi_vals, ys_vals, pass_km, seat_km
 
     def _solve_with_lambda(self, routes_info, day, distances,
-                           ob_by_fac, ib_by_fac, sh_by_od, lam, time_limit):
-        """构建并求解给定λ下的COPT模型"""
+                           ob_by_fac, ib_by_fac, sh_by_od, lam, time_limit,
+                           warm_start=None):
+        """
+        构建并求解给定λ下的COPT模型。
+
+        参数:
+            warm_start: 可选热启动数据 {'selected', 'yo', 'yi', 'ys'}，
+                在 model.solve() 前注入 COPT MipStart。
+        """
         env = cp.Envr()
         model = env.createModel('Q3_Daily')
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
@@ -831,6 +851,35 @@ class Q3DailySolver:
                                 priority=4, reltol=0.05)
             model.setObjectiveN(3, fuel_expr, sense=cp.COPT.MINIMIZE, priority=1, reltol=0.10)
             print(f"  目标: 字典序四目标 (λ={lam:.4f})")
+
+        # --- 热启动注入（ALNS 提供的初始可行解） ---
+        if warm_start is not None:
+            start_vars, start_vals = [], []
+            selected = warm_start.get('selected', set())
+            yo_ws = warm_start.get('yo', {})
+            yi_ws = warm_start.get('yi', {})
+            ys_ws = warm_start.get('ys', {})
+            # 路径选择变量 x
+            for ri_idx in range(len(routes_info)):
+                start_vars.append(x[ri_idx])
+                start_vals.append(1.0 if ri_idx in selected else 0.0)
+            # 出海/海返/穿梭人员分配变量
+            for (ri_idx, f), v in yo_ws.items():
+                if (ri_idx, f) in yo:
+                    start_vars.append(yo[(ri_idx, f)])
+                    start_vals.append(float(v))
+            for (ri_idx, f), v in yi_ws.items():
+                if (ri_idx, f) in yi:
+                    start_vars.append(yi[(ri_idx, f)])
+                    start_vals.append(float(v))
+            for (ri_idx, f1, f2), v in ys_ws.items():
+                if (ri_idx, f1, f2) in ys:
+                    start_vars.append(ys[(ri_idx, f1, f2)])
+                    start_vals.append(float(v))
+            if start_vars:
+                model.setMipStart(start_vars, start_vals)
+                print(f"  热启动注入: {len(start_vars)} 个变量 "
+                      f"(选中路径 {len(selected)} 条)")
 
         # --- 求解 ---
         print("  求解中...")

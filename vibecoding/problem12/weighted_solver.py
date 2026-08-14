@@ -18,6 +18,16 @@ import time as time_module
 from collections import defaultdict
 
 import coptpy as cp
+
+# ==================== 模块路径 ====================
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_VIBECODING_DIR = os.path.dirname(_THIS_DIR)
+if _VIBECODING_DIR not in sys.path:
+    sys.path.insert(0, _VIBECODING_DIR)
+# 同目录导入 problem1_solution/problem2_solution
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
 from config import (
     AIRCRAFT, AIRCRAFT_TYPES, AIRPORTS, REFUEL_FACILITIES,
     MAX_LANDINGS, OUTPUT_DIR, OUTPUT_DIR_Q2, DATA_DIR, fmt6,
@@ -28,8 +38,6 @@ from base_models import (
     calculate_time, make_route
 )
 
-# 确保能导入problem1_solution和problem2_solution
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from problem1_solution import RouteGenerator, OutputWriter
 from problem2_solution import (
     Q2DataLoader, Q2RoutePreprocessor, Q2RouteGenerator, Q2OutputWriter

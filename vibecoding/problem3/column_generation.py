@@ -22,9 +22,13 @@ from collections import defaultdict
 
 # ==================== 模块路径 ====================
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PARENT_DIR = os.path.dirname(_THIS_DIR)
-if _PARENT_DIR not in sys.path:
-    sys.path.insert(0, _PARENT_DIR)
+_VIBECODING_DIR = os.path.dirname(_THIS_DIR)
+if _VIBECODING_DIR not in sys.path:
+    sys.path.insert(0, _VIBECODING_DIR)
+# problem12 子包路径（跨问题导入 Q2RoutePreprocessor）
+_PROBLEM12_DIR = os.path.join(_VIBECODING_DIR, 'problem12')
+if _PROBLEM12_DIR not in sys.path:
+    sys.path.insert(0, _PROBLEM12_DIR)
 
 from config import AIRCRAFT_TYPES, AIRPORTS
 from base_models import make_route, TSPSolver

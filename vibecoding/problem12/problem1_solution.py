@@ -14,9 +14,16 @@
 
 import csv
 import os
+import sys
 import math
 import time as time_module
 from collections import defaultdict
+
+# ==================== 模块路径 ====================
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_VIBECODING_DIR = os.path.dirname(_THIS_DIR)
+if _VIBECODING_DIR not in sys.path:
+    sys.path.insert(0, _VIBECODING_DIR)
 
 import coptpy as cp
 from config import (
