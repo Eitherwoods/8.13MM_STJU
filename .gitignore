@@ -20,6 +20,15 @@
 *.swp
 
 # 项目中间文件
+body/main.log
+body/main.aux
+body/main.out
+body/main.pdf
+body/main.synctex.gz
+body/main.blg
+body/main.bbl
+body/main.synctex(busy)
+
 body/Thesis.log
 body/Thesis.aux
 body/Thesis.out
@@ -29,6 +38,7 @@ body/Thesis.synctex.gz
 body/Thesis.blg
 body/Thesis.bbl
 body/Thesis.synctex(busy)
+
 vibecoding/__pycache__/
 vibecoding/result1.xlsx
 vibecoding/result2.xlsx
