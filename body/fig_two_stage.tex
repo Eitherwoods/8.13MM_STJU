@@ -1,0 +1,46 @@
+% -*- coding: utf-8 -*-
+% 两阶段 ε-容差 + AHP 加权求解流程图（问题一/二共用）
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=0.7cm and 1.2cm,
+    box/.style={draw, rounded corners=3pt, minimum width=3.2cm, minimum height=0.8cm,
+        align=center, font=\small, fill=blue!8},
+    box2/.style={draw, rounded corners=3pt, minimum width=3.2cm, minimum height=0.8cm,
+        align=center, font=\small, fill=green!10},
+    box3/.style={draw, rounded corners=3pt, minimum width=3.2cm, minimum height=0.8cm,
+        align=center, font=\small, fill=orange!12},
+    arrow/.style={->, >=stealth, thick, draw=gray!70},
+]
+
+% 第一行：路径生成
+\node[box] (gen) {Clarke-Wright 节省算法\\分层路径生成};
+\node[box, right=of gen] (fuel) {燃油可行性检查\\加油中转点嵌入};
+\node[box, right=of fuel] (pool) {候选路径池 $\mathcal{R}$};
+
+% 第二行：阶段一
+\node[box2, below=1.0cm of gen] (s1) {\textbf{阶段一}：$\min T=\sum_r t_r x_r$};
+\node[box2, right=of s1] (tstar) {得 $T^*$, 锚点\\$(\tau_0, W_0, F_0)$};
+
+% 第三行：阶段二
+\node[box3, below=1.0cm of s1] (s2) {\textbf{阶段二}：$\min Z_2$\\$T\le(1+\varepsilon)T^*$};
+\node[box3, right=of s2] (ahp) {AHP 权重加权\\$w_\tau, w_u, w_F$};
+
+% 第四行：输出
+\node[box, below=1.0cm of s2] (out) {人员分配与结果输出};
+
+% 箭头
+\draw[arrow] (gen) -- (fuel);
+\draw[arrow] (fuel) -- (pool);
+\draw[arrow] (pool.south) |- (tstar.east);
+\draw[arrow] (s1) -- (tstar);
+\draw[arrow] (tstar.south) |- (s2.east);
+\draw[arrow] (s1) -- (s2);
+\draw[arrow] (s2) -- (ahp);
+\draw[arrow] (s2) -- (out);
+\draw[arrow] (ahp.south) |- (out.east);
+
+\end{tikzpicture}
+\caption{两阶段 $\varepsilon$-容差 + AHP 加权求解流程}
+\label{fig:two_stage_flow}
+\end{figure}

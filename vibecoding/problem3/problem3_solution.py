@@ -204,7 +204,20 @@ class Q3ScheduleHelper:
 
 # ==================== Q3路径生成器（创新点C3 + C7） ====================
 class Q3RouteGenerator:
-    """Q3路径生成器：复用节省算法 + 时间窗过滤 + 起飞时刻变体 + 时间窗聚类(C7)"""
+    """
+    Q3路径生成器：复用节省算法 + 时间窗过滤 + 起飞时刻变体 + 时间窗聚类(C7)
+    
+    剪枝策略:
+    1. 双设施路径: 节省值排序，取前120对（扩大候选池以提高解质量）
+    2. 三设施路径: 距离阈值 ≤ 100km，数量上限 100条
+    3. 穿梭OD对专用路径: 确保所有有穿梭需求的设施对至少有一条覆盖路径
+    4. 燃油检查剪枝: 通过make_route函数调用FuelChecker.check_fuel，自动应用提前剪枝
+    
+    设计原理:
+    - Q3是多日排班问题，每天的需求不同，所以路径生成参数相对保守
+    - 通过扩大候选池，可以找到更优的路径组合
+    - 穿梭OD对专用路径确保需求覆盖
+    """
 
     def __init__(self, distances):
         self.distances = distances
@@ -279,7 +292,8 @@ class Q3RouteGenerator:
                     if s > 0:
                         savings.append((s, f1, f2))
             savings.sort(reverse=True)
-            for s, f1, f2 in savings[:80]:
+            # 扩大候选池以提高解质量（从80对扩展到120对）
+            for s, f1, f2 in savings[:120]:
                 best_order, _ = TSPSolver.best_order(airport, [f1, f2], self.distances)
                 for atype in AIRCRAFT_TYPES:
                     r = make_route(next_id(), airport, atype, best_order, self.distances)
@@ -1615,17 +1629,18 @@ def main():
     Q3OutputWriter.write_routes(flights, OUTPUT_DIR_Q3)
     Q3OutputWriter.write_assignments(flights, all_demands, temp_satisfied, temp_unsatisfied, OUTPUT_DIR_Q3)
 
-    # 7. 指标汇总（含Phase2新增架次）
+    # 7. 指标汇总（分阶段汇报）
     print("\n" + "=" * 60)
-    print("问题3结果汇总")
+    print("问题3结果汇总（分阶段）")
     print("=" * 60)
     # 重新计算总计：时间/燃油/座公里从所有flights重新计算
     actual_time = sum(f['route_info']['route'].time for f in flights)
     actual_fuel = sum(f['route_info']['route'].fuel for f in flights)
     actual_seat_km = sum(f['route_info']['route'].capacity * f['route_info']['route'].total_distance
                          for f in flights)
-    # pass_km: Phase1值 + 临时任务贡献（用distances计算OD间航段距离）
-    actual_pass_km = total_pass_km
+    # 临时任务客公里和在途时间
+    temp_pass_km = 0.0
+    temp_transit = 0
     for d in temp_satisfied:
         fi = d.get('_flight_idx')
         if fi is not None and fi < len(flights):
@@ -1638,33 +1653,67 @@ def main():
                 p1 = r.path.index(o_actual)
                 p2 = r.path.index(de_actual)
                 if p2 > p1:
+                    speed = AIRCRAFT[r.aircraft_type]['speed']
                     for s in range(p1, p2):
-                        actual_pass_km += distances[r.path[s]][r.path[s + 1]]
+                        seg_dist = distances[r.path[s]][r.path[s + 1]]
+                        temp_pass_km += seg_dist
+                        temp_transit += seg_dist / speed * 60
+    actual_pass_km = total_pass_km + temp_pass_km
     total_flights = len(flights)
+    phase1_n_flights = len(all_selected_routes)
+    phase2_new_flights = total_flights - phase1_n_flights
+    phase2_new_time = actual_time - T_star
+    phase2_new_fuel = actual_fuel - total_fuel
+    phase1_seat_util = total_pass_km / total_seat_km if total_seat_km > 0 else 0
     seat_util = actual_pass_km / actual_seat_km if actual_seat_km > 0 else 0
+    total_transit_all = total_transit + temp_transit
     temp_satisfied_count = len(temp_satisfied)
     temp_total = len(temp_demands)
 
-    metrics = {
-        '总飞机使用时间': f"{actual_time} 分钟 ({actual_time/60:.2f}h)",
-        '阶段一T*': f"{T_star} 分钟 ({T_star/60:.2f}h)",
-        '总架次数': str(total_flights),
-        '总燃油消耗量': f"{actual_fuel:.1f} kg",
-        '座位利用率': f"{seat_util*100:.2f}%",
-        '人员在途时间': f"{total_transit} 分钟 ({total_transit/60:.2f}h)",
-        '临时任务满足': f"{temp_satisfied_count}/{temp_total}",
-    }
+    metrics = {}
+    # 阶段一指标
+    metrics['--- 阶段一：固定排班（不含临时任务） ---'] = ''
+    metrics['  总飞机使用时间 T*'] = f"{T_star} 分钟 ({T_star/60:.2f}h)"
+    metrics['  总架次数'] = str(phase1_n_flights)
+    metrics['  总燃油消耗量'] = f"{total_fuel:.1f} kg"
+    metrics['  座位利用率'] = f"{phase1_seat_util*100:.2f}%"
+    metrics['  人员在途时间'] = f"{total_transit} 分钟 ({total_transit/60:.2f}h)"
+    # 阶段二指标
+    metrics['--- 阶段二：临时任务背包化 ---'] = ''
+    metrics['  新增飞机使用时间'] = f"{phase2_new_time} 分钟 ({phase2_new_time/60:.2f}h)"
+    metrics['  新增架次数'] = str(phase2_new_flights)
+    metrics['  新增燃油消耗量'] = f"{phase2_new_fuel:.1f} kg"
+    metrics['  临时任务在途时间'] = f"{temp_transit} 分钟 ({temp_transit/60:.2f}h)"
+    metrics['  临时任务客公里'] = f"{temp_pass_km:.1f}"
+    metrics['  临时任务满足'] = f"{temp_satisfied_count}/{temp_total} ({temp_satisfied_count/temp_total*100:.2f}%)"
+    # 合计指标
+    metrics['--- 合计 ---'] = ''
+    metrics['  总飞机使用时间'] = f"{actual_time} 分钟 ({actual_time/60:.2f}h)"
+    metrics['  总架次数'] = str(total_flights)
+    metrics['  总燃油消耗量'] = f"{actual_fuel:.1f} kg"
+    metrics['  座位利用率'] = f"{seat_util*100:.2f}%"
+    metrics['  人员在途时间'] = f"{total_transit_all} 分钟 ({total_transit_all/60:.2f}h)"
+
     for k, v in metrics.items():
-        print(f"  {k}: {v}")
+        if v:
+            print(f"  {k}: {v}")
+        else:
+            print(f"\n{k}")
 
     # 写指标文件
     metrics_path = os.path.join(OUTPUT_DIR_Q3, 'q3-metrics.txt')
     os.makedirs(OUTPUT_DIR_Q3, exist_ok=True)
     with open(metrics_path, 'w', encoding='utf-8') as f:
         for k, v in metrics.items():
-            f.write(f"{k}: {v}\n")
+            if v:
+                f.write(f"{k}: {v}\n")
+            else:
+                f.write(f"{k}\n")
     print(f"\n指标已写入 {metrics_path}")
 
 
 if __name__ == '__main__':
     main()
+
+
+

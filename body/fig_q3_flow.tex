@@ -1,0 +1,58 @@
+% -*- coding: utf-8 -*-
+% 问题三两阶段求解流程图
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm and 0.8cm,
+    box/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
+        align=center, font=\footnotesize, fill=blue!8},
+    box2/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
+        align=center, font=\footnotesize, fill=green!10},
+    box3/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
+        align=center, font=\footnotesize, fill=orange!12},
+    box4/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
+        align=center, font=\footnotesize, fill=red!8},
+    arrow/.style={->, >=stealth, thick, draw=gray!70},
+    darrow/.style={->, >=stealth, thick, draw=gray!70, dashed},
+]
+
+% 阶段一标题
+\node[font=\small\bfseries, fill=green!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s1title) at (0, 2.8) {阶段一：固定排班（3840人）};
+
+% 第一行
+\node[box2] (decouple) at (-3.5, 1.8) {按天解耦定理\\$\to$ 7个单日};
+\node[box2, right=0.6cm of decouple] (alloc) {需求-日期分配\\（跨天均衡）};
+\node[box2, right=0.6cm of alloc] (daily) {逐日 MIP 求解};
+
+% 第二行（每日内部）
+\node[box] (cpm) at (-3.5, 0.6) {CPM 时间窗收缩\\剔除不可行路径};
+\node[box, right=0.6cm of cpm] (route) {受限路径池\\+ 时刻偏移};
+\node[box, right=0.6cm of route] (mip) {加权单目标 MIP\\+ Dinkelbach};
+
+% 汇总
+\node[box2] (tstar) at (0, -0.6) {汇总 7 日 $\to T^*$};
+
+% 阶段二标题
+\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s2title) at (0, -1.8) {阶段二：临时任务加入（160人）};
+
+% 第三行
+\node[box3] (knapsack) at (0, -2.8) {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
+
+% 输出
+\node[box4] (output) at (0, -4.0) {输出 $q3$-routes.csv + $q3$-assignments.csv};
+
+% 箭头
+\draw[arrow] (decouple) -- (alloc);
+\draw[arrow] (alloc) -- (daily);
+\draw[arrow] (daily) -- (cpm);
+\draw[arrow] (cpm) -- (route);
+\draw[arrow] (route) -- (mip);
+\draw[arrow] (mip) -- (tstar);
+\draw[arrow] (tstar) -- (s2title);
+\draw[arrow] (s2title) -- (knapsack);
+\draw[arrow] (knapsack) -- (output);
+
+\end{tikzpicture}
+\caption{问题三两阶段求解流程}
+\label{fig:q3_flow}
+\end{figure}
