@@ -103,6 +103,21 @@ class FuelChecker:
         total_distance = sum(distances[path[i]][path[i + 1]] for i in range(len(path) - 1))
         total_fuel = total_distance * fuel_rate
 
+        # === 剪枝1: 全局油量检查 ===
+        # 最大可用油量 = 初始满油 + 加油次数 × (满油 - 余油)
+        # 每次加油能补充的净油量 = tank - min_reserve
+        max_fuel_available = tank + len(refuel_positions) * (tank - min_reserve)
+        if total_fuel > max_fuel_available + 1e-6:
+            return False, set(), total_fuel  # 即使每个可加油点都加满也不够
+
+        # === 剪枝2: 单段距离检查 ===
+        # 任何一段的油耗不能超过满箱减去余油
+        max_single_leg_fuel = tank - min_reserve
+        for i in range(len(path) - 1):
+            d = distances[path[i]][path[i + 1]]
+            if d * fuel_rate > max_single_leg_fuel + 1e-6:
+                return False, set(), total_fuel  # 这段单独就飞不到
+
         best_refuel = None
         min_refuel_count = float('inf')
 
@@ -369,3 +384,4 @@ def make_route(route_id: int, airport: str, aircraft_type: str,
         transit_times=transit_times,
         dist_to_facility=dist_to_fac
     )
+

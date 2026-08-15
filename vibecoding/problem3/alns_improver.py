@@ -178,6 +178,13 @@ class AlnsImprover:
         for idx, ods in self.cap_sh.items():
             for od in ods:
                 self.routes_by_sh[od].append(idx)
+        # 预排序：按路径边际成本升序，供贪心分配/修复快速取用
+        for f, idxs in self.routes_by_ob.items():
+            idxs.sort(key=lambda i: self._route_marginal_cost(i))
+        for f, idxs in self.routes_by_ib.items():
+            idxs.sort(key=lambda i: self._route_marginal_cost(i))
+        for od, idxs in self.routes_by_sh.items():
+            idxs.sort(key=lambda i: self._route_marginal_cost(i))
 
     def _build_fleet_groups(self):
         """建立机场-机型分组与时间槽占用（与 MIP 约束4 一致）"""
@@ -187,6 +194,88 @@ class AlnsImprover:
         for idx, ri in enumerate(self.routes_info):
             r = ri['route']
             self.fleet_groups[(r.airport, r.aircraft_type)].append(idx)
+
+        # 时间槽索引：(airport, atype, slot) -> 占用该槽的路径集合
+        self.slot_to_routes = defaultdict(set)
+        for idx, ri in enumerate(self.routes_info):
+            r = ri['route']
+            key = (r.airport, r.aircraft_type)
+            for slot in ri['time_slots']:
+                self.slot_to_routes[(key[0], key[1], slot)].add(idx)
+
+    def _can_add_route(self, idx, selected):
+        """检查路径 idx 加入 selected 后是否违反机队约束"""
+        r = self.routes_info[idx]['route']
+        max_count = self.fleet_max[r.airport][r.aircraft_type]
+        for slot in self.routes_info[idx]['time_slots']:
+            # 已选中且占用同一时间槽的路径数
+            occupied = self.slot_to_routes[(r.airport, r.aircraft_type, slot)]
+            n_selected = sum(1 for other in occupied if other in selected)
+            if n_selected + 1 > max_count:
+                return False
+        return True
+
+    def _occupied_count(self, airport, atype, slot, selected):
+        """返回 (airport, atype, slot) 时间槽上已选中的路径数"""
+        occupied = self.slot_to_routes.get((airport, atype, slot), set())
+        return sum(1 for other in occupied if other in selected)
+
+    def _rebuild_slot_count(self, selected):
+        """重建时间槽占用计数 {(airport, atype, slot): 已选中路径数}"""
+        slot_count = defaultdict(int)
+        for idx in selected:
+            r = self.routes_info[idx]['route']
+            for slot in self.routes_info[idx]['time_slots']:
+                slot_count[(r.airport, r.aircraft_type, slot)] += 1
+        return slot_count
+
+    def _can_add_route_fast(self, idx, slot_count):
+        """快速机队检查：O(路径时间槽数)，基于增量维护的槽位计数"""
+        r = self.routes_info[idx]['route']
+        max_count = self.fleet_max[r.airport][r.aircraft_type]
+        for slot in self.routes_info[idx]['time_slots']:
+            if slot_count.get((r.airport, r.aircraft_type, slot), 0) + 1 > max_count:
+                return False
+        return True
+
+    @staticmethod
+    def _add_slot_count(idx, routes_info, slot_count):
+        """把路径 idx 加入槽位计数"""
+        r = routes_info[idx]['route']
+        for slot in routes_info[idx]['time_slots']:
+            slot_count[(r.airport, r.aircraft_type, slot)] += 1
+
+    def _fix_fleet_violations(self, solution):
+        """
+        修复机队约束违规：按时间槽冲突贪心移除多余路径。
+        反复扫描，直到无违规或达到最大轮数。
+        """
+        for _ in range(20):
+            violators = []
+            for (airport, atype), indices in self.fleet_groups.items():
+                max_count = self.fleet_max[airport][atype]
+                slot_occ = defaultdict(list)
+                for idx in indices:
+                    if idx in solution.selected:
+                        for slot in self.routes_info[idx]['time_slots']:
+                            slot_occ[slot].append(idx)
+                for slot, ri_list in slot_occ.items():
+                    if len(ri_list) > max_count:
+                        # 按时间成本从高到低移除，保留成本最低的 max_count 条
+                        ri_list.sort(key=lambda i: self._route_time(i), reverse=True)
+                        for idx in ri_list[max_count:]:
+                            if idx not in violators:
+                                violators.append(idx)
+            if not violators:
+                break
+            # 移除冲突最严重的路径（按出现次数）
+            for idx in sorted(set(violators), key=lambda i: -self._route_time(i)):
+                if solution.selected and idx in solution.selected:
+                    solution.selected.discard(idx)
+        # 重新贪心分配
+        yo, yi, ys = self._assign_greedy(solution)
+        solution.yo, solution.yi, solution.ys = yo, yi, ys
+        return solution
 
     # ==================== 路径与分配的基本量 ====================
     def _route_time(self, idx):
@@ -201,6 +290,12 @@ class AlnsImprover:
         """路径可用座公里"""
         r = self.routes_info[idx]['route']
         return r.capacity * r.total_distance
+
+    def _route_marginal_cost(self, idx):
+        """路径的加权边际成本（不含 pass_km/transit，二者依赖人员分配）"""
+        return (self.W_TIME * self._route_time(idx)
+                + self.W_FUEL * self._route_fuel(idx)
+                + self.W_UTIL * self.LAM * self._route_seat_km(idx))
 
     def _segment_loads(self, solution):
         """计算每条选中路径每个航段的在机人数，返回 {(idx): [load0, load1, ...]}"""
@@ -280,8 +375,34 @@ class AlnsImprover:
             uncovered += max(0, n - sh_served.get(od, 0))
         return uncovered
 
+    def _check_origin(self, solution):
+        """检查起点感知约束，返回违规总量（0表示满足）"""
+        violation = 0
+        # 出海：指定机场需求必须由对应机场路径服务
+        for f, info in self.ob_by_fac.items():
+            for origin, need in info['by_origin'].items():
+                if origin == 'LAND':
+                    continue
+                served = 0
+                for (ri, ff), v in solution.yo.items():
+                    if ff == f and self.airport_of[ri] == origin:
+                        served += v
+                violation += max(0, need - served)
+        # 海返：指定机场需求必须由对应机场路径服务
+        for f, info in self.ib_by_fac.items():
+            for dest, need in info['by_dest'].items():
+                if dest == 'LAND':
+                    continue
+                served = 0
+                for (ri, ff), v in solution.yi.items():
+                    if ff == f and self.airport_of[ri] == dest:
+                        served += v
+                violation += max(0, need - served)
+        return violation
+
     # ==================== 目标函数 ====================
-    def evaluate(self, solution, penalty_cap=1e6, penalty_cov=1e6, penalty_fleet=1e6):
+    def evaluate(self, solution, penalty_cap=1e4, penalty_cov=1e4,
+                 penalty_fleet=1e4, penalty_origin=1e4):
         """
         计算加权目标值（与 Q3DailySolver 一致）+ 约束惩罚。
 
@@ -317,6 +438,7 @@ class AlnsImprover:
         obj += penalty_cap * self._check_capacity(solution)
         obj += penalty_cov * self._check_coverage(solution)
         obj += penalty_fleet * self._check_fleet(solution)
+        obj += penalty_origin * self._check_origin(solution)
         return obj
 
     # ==================== 贪心分配 ====================
@@ -334,10 +456,8 @@ class AlnsImprover:
         # 出海：优先指定机场需求
         for f in self.ob_facilities:
             info = self.ob_by_fac[f]
-            remaining = info['total']
-            # 先处理指定机场（非 LAND）需求
-            for origin, cnt in sorted(info['by_origin'].items(),
-                                      key=lambda kv: kv[0] == 'LAND'):
+            # 1) 指定机场（非 LAND）需求：只能由对应机场路径服务，不得 fallback
+            for origin, cnt in info['by_origin'].items():
                 if origin == 'LAND' or cnt == 0:
                     continue
                 for idx in self.routes_by_ob.get(f, []):
@@ -350,28 +470,28 @@ class AlnsImprover:
                         self._apply_load(idx, f, 'ob', n_take, loads)
                         yo[(idx, f)] = yo.get((idx, f), 0) + n_take
                         cnt -= n_take
-                        remaining -= n_take
                     if cnt == 0:
                         break
-            # 剩余需求（含 LAND 与指定机场未满足的）由任意经过路径服务
-            if remaining > 0:
+                # 指定机场未满足的需求保留为未覆盖（不跨机场分配）
+            # 2) LAND 需求：由任意经过路径服务
+            land_cnt = info['by_origin'].get('LAND', 0)
+            if land_cnt > 0:
                 for idx in self.routes_by_ob.get(f, []):
                     if idx not in solution.selected:
                         continue
-                    n_take = min(remaining, self._free_capacity(idx, f, 'ob', loads))
+                    n_take = min(land_cnt, self._free_capacity(idx, f, 'ob', loads))
                     if n_take > 0:
                         self._apply_load(idx, f, 'ob', n_take, loads)
                         yo[(idx, f)] = yo.get((idx, f), 0) + n_take
-                        remaining -= n_take
-                    if remaining == 0:
+                        land_cnt -= n_take
+                    if land_cnt == 0:
                         break
 
         # 海返
         for f in self.ib_facilities:
             info = self.ib_by_fac[f]
-            remaining = info['total']
-            for dest, cnt in sorted(info['by_dest'].items(),
-                                    key=lambda kv: kv[0] == 'LAND'):
+            # 1) 指定机场（非 LAND）需求：只能由对应机场路径服务
+            for dest, cnt in info['by_dest'].items():
                 if dest == 'LAND' or cnt == 0:
                     continue
                 for idx in self.routes_by_ib.get(f, []):
@@ -384,19 +504,20 @@ class AlnsImprover:
                         self._apply_load(idx, f, 'ib', n_take, loads)
                         yi[(idx, f)] = yi.get((idx, f), 0) + n_take
                         cnt -= n_take
-                        remaining -= n_take
                     if cnt == 0:
                         break
-            if remaining > 0:
+            # 2) LAND 需求：由任意经过路径服务
+            land_cnt = info['by_dest'].get('LAND', 0)
+            if land_cnt > 0:
                 for idx in self.routes_by_ib.get(f, []):
                     if idx not in solution.selected:
                         continue
-                    n_take = min(remaining, self._free_capacity(idx, f, 'ib', loads))
+                    n_take = min(land_cnt, self._free_capacity(idx, f, 'ib', loads))
                     if n_take > 0:
                         self._apply_load(idx, f, 'ib', n_take, loads)
                         yi[(idx, f)] = yi.get((idx, f), 0) + n_take
-                        remaining -= n_take
-                    if remaining == 0:
+                        land_cnt -= n_take
+                    if land_cnt == 0:
                         break
 
         # 穿梭
@@ -451,41 +572,45 @@ class AlnsImprover:
 
     # ==================== 初始解构造 ====================
     def build_initial_solution(self):
-        """贪心构造初始可行解：逐设施/OD 选边际成本最低的路径"""
+        """
+        贪心构造初始可行解：
+        对每个未覆盖设施/OD，从反索引中选"时间成本最低且不违反机队"的路径，
+        尽量复用已选路径以压缩架次数。
+        """
         selected = set()
-        covered_ob = set()
-        covered_ib = set()
-        covered_sh = set()
 
-        # 出海
+        def _try_add(idx):
+            """尝试加入路径（含机队检查）"""
+            if idx in selected:
+                return True
+            if self._can_add_route(idx, selected):
+                selected.add(idx)
+                return True
+            return False
+
+        # 出海设施
         for f in self.ob_facilities:
-            candidates = self.routes_by_ob.get(f, [])
-            if not candidates:
-                continue
-            best_idx = min(candidates, key=lambda i: self._route_time(i))
-            selected.add(best_idx)
-            covered_ob.add(f)
-
-        # 海返
+            cands = self.routes_by_ob.get(f, [])
+            for idx in cands:
+                if idx in selected or _try_add(idx):
+                    break
+        # 海返设施
         for f in self.ib_facilities:
-            candidates = self.routes_by_ib.get(f, [])
-            if not candidates:
-                continue
-            best_idx = min(candidates, key=lambda i: self._route_time(i))
-            selected.add(best_idx)
-            covered_ib.add(f)
-
-        # 穿梭
+            cands = self.routes_by_ib.get(f, [])
+            for idx in cands:
+                if idx in selected or _try_add(idx):
+                    break
+        # 穿梭 OD
         for od in self.sh_ods:
-            candidates = self.routes_by_sh.get(od, [])
-            if not candidates:
-                continue
-            best_idx = min(candidates, key=lambda i: self._route_time(i))
-            selected.add(best_idx)
-            covered_sh.add(od)
+            cands = self.routes_by_sh.get(od, [])
+            for idx in cands:
+                if idx in selected or _try_add(idx):
+                    break
 
         yo, yi, ys = self._assign_greedy(AlnsSolution(selected, {}, {}, {}))
         sol = AlnsSolution(selected, yo, yi, ys)
+        # 强制消除机队违规
+        self._fix_fleet_violations(sol)
         return sol
 
     # ==================== 破坏算子 ====================
@@ -559,12 +684,16 @@ class AlnsImprover:
 
     # ==================== 修复算子 ====================
     def _repair_greedy(self, partial):
-        """贪心修复：对未覆盖需求，逐个选边际时间成本最低的路径"""
+        """贪心修复：对未覆盖需求，逐个选边际时间成本最低且不违反机队的路径"""
         solution = partial.copy()
         # 重新分配（已有路径可能空出容量）
         yo, yi, ys = self._assign_greedy(solution)
         solution.yo, solution.yi, solution.ys = yo, yi, ys
+        # 仅在有机队违规时消除
+        if self._check_fleet(solution) > 0:
+            self._fix_fleet_violations(solution)
 
+        slot_count = self._rebuild_slot_count(solution.selected)
         # 找未覆盖需求
         uncovered = self._uncovered_demands(solution)
         for kind, key in uncovered:
@@ -573,11 +702,14 @@ class AlnsImprover:
             for idx in candidates:
                 if idx in solution.selected:
                     continue
-                cost = self._route_time(idx)
+                if not self._can_add_route_fast(idx, slot_count):
+                    continue
+                cost = self._route_marginal_cost(idx)
                 if best_cost is None or cost < best_cost:
                     best_cost, best_idx = cost, idx
             if best_idx is not None:
                 solution.selected.add(best_idx)
+                self._add_slot_count(best_idx, self.routes_info, slot_count)
 
         # 加入路径后重新分配
         yo, yi, ys = self._assign_greedy(solution)
@@ -589,7 +721,10 @@ class AlnsImprover:
         solution = partial.copy()
         yo, yi, ys = self._assign_greedy(solution)
         solution.yo, solution.yi, solution.ys = yo, yi, ys
+        if self._check_fleet(solution) > 0:
+            self._fix_fleet_violations(solution)
 
+        slot_count = self._rebuild_slot_count(solution.selected)
         for _ in range(200):
             uncovered = self._uncovered_demands(solution)
             if not uncovered:
@@ -597,10 +732,12 @@ class AlnsImprover:
             regrets = []
             for kind, key in uncovered:
                 candidates = self._candidate_routes(kind, key)
-                cands_out = [i for i in candidates if i not in solution.selected]
+                cands_out = [i for i in candidates
+                             if i not in solution.selected
+                             and self._can_add_route_fast(i, slot_count)]
                 if not cands_out:
                     continue
-                costs = sorted(self._route_time(i) for i in cands_out)
+                costs = sorted(self._route_marginal_cost(i) for i in cands_out)
                 if len(costs) >= 2:
                     regret = costs[1] - costs[0]
                 else:
@@ -611,10 +748,12 @@ class AlnsImprover:
             regrets.sort(reverse=True)
             _, kind, key = regrets[0]
             cands_out = [i for i in self._candidate_routes(kind, key)
-                         if i not in solution.selected]
+                         if i not in solution.selected
+                         and self._can_add_route_fast(i, slot_count)]
             if cands_out:
-                best_idx = min(cands_out, key=lambda i: self._route_time(i))
+                best_idx = min(cands_out, key=lambda i: self._route_marginal_cost(i))
                 solution.selected.add(best_idx)
+                self._add_slot_count(best_idx, self.routes_info, slot_count)
 
         yo, yi, ys = self._assign_greedy(solution)
         solution.yo, solution.yi, solution.ys = yo, yi, ys
@@ -768,7 +907,17 @@ class AlnsImprover:
                 print(f"  iter {it+1}/{iterations}: 当前={current_obj:.2f}, "
                       f"最优={best_obj:.2f}, 路径={len(best.selected)}")
 
-        print(f"  ALNS 最终: 路径={len(best.selected)}, 目标={best_obj:.2f}")
+        # 最终可行性修复：消除机队违规并重新分配
+        self._fix_fleet_violations(best)
+        yo, yi, ys = self._assign_greedy(best)
+        best.yo, best.yi, best.ys = yo, yi, ys
+        best_obj = self.evaluate(best)
+
+        cap_v = self._check_capacity(best)
+        cov_v = self._check_coverage(best)
+        fleet_v = self._check_fleet(best)
+        print(f"  ALNS 最终: 路径={len(best.selected)}, 目标={best_obj:.2f}, "
+              f"违规(容量={cap_v}, 覆盖={cov_v}, 机队={fleet_v})")
         return best, best_obj
 
     # ==================== 热启动映射 ====================

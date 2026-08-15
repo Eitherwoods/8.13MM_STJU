@@ -111,8 +111,8 @@ class RouteGenerator:
                         savings.append((s, f1, f2))
 
             savings.sort(reverse=True)
-            # 每个机场取前200对
-            for s, f1, f2 in savings[:200]:
+            # 每个机场取前300对（扩大候选池以提高解质量）
+            for s, f1, f2 in savings[:300]:
                 best_order, _ = TSPSolver.best_order(airport, [f1, f2], self.distances)
                 for atype in AIRCRAFT_TYPES:
                     r = make_route(next_id(), airport, atype, best_order, self.distances)
@@ -121,7 +121,14 @@ class RouteGenerator:
         return routes
 
     def _gen_triple(self, next_id, routes_2):
-        """生成三设施路径：扩展最优双设施路径"""
+        """
+        生成三设施路径：扩展最优双设施路径
+        
+        剪枝策略:
+        1. 按(机场, 设施集合)分组，每组只保留时间最短的路径作为扩展基础
+        2. 距离阈值: 新设施必须与现有路径中的某个设施距离 ≤ 100km
+        3. 数量上限: 最多生成300条三设施路径
+        """
         routes = []
         # 按机场+设施集合分组，取每组最佳
         groups = defaultdict(list)
@@ -152,7 +159,15 @@ class RouteGenerator:
         return routes
 
     def _gen_quad_quint(self, next_id, routes_3):
-        """生成四-五设施路径：扩展最优三设施路径"""
+        """
+        生成四-五设施路径：扩展最优三设施路径
+        
+        剪枝策略 (渐进式距离阈值):
+        1. 四设施路径: 距离阈值 ≤ 80km, 数量上限 300条
+        2. 五设施路径: 距离阈值 ≤ 60km, 数量上限 300条(累计)
+        
+        设计原理: 随着设施数量增加，路径越长，需要更紧凑的设施分布才能保证燃油可行性
+        """
         routes = []
         groups = defaultdict(list)
         for r in routes_3:
@@ -162,7 +177,7 @@ class RouteGenerator:
 
         count = 0
         for r3 in best_triples:
-            if count >= 200:
+            if count >= 300:  # 扩展到300条，与双设施路径候选池规模匹配
                 break
             existing = list(r3.dest_facilities)
             for f4 in self.facilities:
@@ -663,3 +678,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+

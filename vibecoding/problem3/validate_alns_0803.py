@@ -37,7 +37,7 @@ from config import DATA_DIR
 # ==================== 全局配置 ====================
 TARGET_DAY = date(2026, 8, 3)
 MIP_TIME_LIMIT = 60          # 单次 MIP 求解时限（秒）
-ALNS_ITERATIONS = 300        # ALNS 迭代次数
+ALNS_ITERATIONS = 100        # ALNS 迭代次数
 OUTPUT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -107,6 +107,22 @@ def main():
     print(f"  ALNS 耗时 {t1-t0:.1f}s, 目标值 {alns_obj:.2f}, "
           f"选中路径 {len(alns_sol.selected)} 条")
 
+    # ALNS 本身的四项指标（第三个对比点）
+    alns_sel = [routes_info[i] for i in alns_sol.selected]
+    alns_time = sum(ri['route'].time for ri in alns_sel)
+    alns_fuel = sum(ri['route'].fuel for ri in alns_sel)
+    alns_seat = sum(ri['route'].capacity * ri['route'].total_distance for ri in alns_sel)
+    alns_pass = 0.0
+    for (ri, f), v in alns_sol.yo.items():
+        alns_pass += v * routes_info[ri]['precomputed']['dist_to'].get(f, 0)
+    for (ri, f), v in alns_sol.yi.items():
+        alns_pass += v * routes_info[ri]['precomputed']['dist_from'].get(f, 0)
+    for (ri, f1, f2), v in alns_sol.ys.items():
+        alns_pass += v * routes_info[ri]['precomputed']['shuttle_info'].get((f1, f2), {}).get('dist', 0)
+    alns_util = alns_pass / alns_seat if alns_seat > 0 else 0.0
+    print(f"  ALNS 自身: 时间={alns_time}min, 利用率={alns_util*100:.2f}%, "
+          f"架次={len(alns_sel)}, 燃油={alns_fuel:.1f}kg")
+
     # ---------- 4. 实验 A: 无热启动 ----------
     print("\n[3] 实验 A: COPT MIP 无热启动（基线）...")
     solver_a = Q3DailySolver()
@@ -146,6 +162,8 @@ def main():
     print("消融实验结果")
     print("=" * 70)
     if metrics_a and metrics_b:
+        print(f"  ALNS自身: 时间={alns_time}min, 利用率={alns_util*100:.2f}%, "
+              f"架次={len(alns_sel)}, 燃油={alns_fuel:.1f}kg")
         dt = metrics_b[0] - metrics_a[0]
         du = (metrics_b[1] - metrics_a[1]) * 100
         dn = metrics_b[2] - metrics_a[2]

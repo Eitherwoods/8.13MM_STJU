@@ -319,11 +319,16 @@ class Q3RouteGenerator:
                 unique.append(r)
         base_routes = unique
 
-        # 为未覆盖的穿梭OD对生成专用路径（确保设施顺序匹配需求方向）
+        # 为穿梭OD对生成专用直达路径（确保设施顺序匹配需求方向）
         shuttle_ods = set()
+        urgent_shuttle_ods = set()
         for d in day_demands:
             if d['origin_id'].startswith('F') and d['destination_id'].startswith('F'):
                 shuttle_ods.add((d['origin_id'], d['destination_id']))
+                # 紧急/增储上产穿梭需求时间窗紧，必须生成专用直达路径，
+                # 否则多停靠路径的中间停靠会导致到达过晚、需求漏配
+                if d['task_type'] in ('emergency', 'production'):
+                    urgent_shuttle_ods.add((d['origin_id'], d['destination_id']))
         covered_ods = set()
         for r in base_routes:
             facs = [f for f in r.path if f.startswith('F')]
@@ -331,14 +336,27 @@ class Q3RouteGenerator:
                 for j in range(i + 1, len(facs)):
                     covered_ods.add((facs[i], facs[j]))
         uncovered_ods = shuttle_ods - covered_ods
-        for (f1, f2) in uncovered_ods:
+        # 未覆盖 OD 与紧急 OD 都需要专用直达路径
+        dedicated_ods = uncovered_ods | urgent_shuttle_ods
+        for (f1, f2) in dedicated_ods:
             for airport in AIRPORTS:
                 for atype in AIRCRAFT_TYPES:
                     r = make_route(next_id(), airport, atype, [f1, f2], self.distances)
                     if r is not None:
                         base_routes.append(r)
-        if uncovered_ods:
-            print(f"  补充穿梭专用路径: {len(uncovered_ods)}个OD对")
+                    if (f1, f2) in urgent_shuttle_ods:
+                        # 紧急穿梭：额外生成"去程直达 + 返程段加油"的路径，
+                        # 避免加油点被自动插入 f1->f2 之间而破坏紧急时间窗
+                        for refuel_fac in REFUEL_FACILITIES:
+                            if refuel_fac in (f1, f2):
+                                continue
+                            r2 = make_route(next_id(), airport, atype,
+                                            [f1, f2, refuel_fac], self.distances)
+                            if r2 is not None:
+                                base_routes.append(r2)
+        if dedicated_ods:
+            print(f"  补充穿梭专用路径: {len(dedicated_ods)}个OD对 "
+                  f"(未覆盖{len(uncovered_ods)} + 紧急{len(urgent_shuttle_ods)})")
 
         # C7实验结论：聚类偏移替换固定偏移导致覆盖率下降，利用率反降
         # 保留原始固定偏移策略（C7方法保留供论文对比分析）
@@ -504,6 +522,7 @@ class Q3DailySolver:
         compat_ob = defaultdict(dict)
         compat_ib = defaultdict(dict)
         compat_sh = defaultdict(dict)
+        demand_routes = defaultdict(list)
 
         for ri_idx, ri in enumerate(routes_info):
             r = ri['route']
@@ -513,6 +532,7 @@ class Q3DailySolver:
                 pre = Q2RoutePreprocessor.preprocess(r, distances)
                 ri['precomputed'] = pre
             for d in ri['compatible_demands']:
+                demand_routes[d['person_id']].append(ri_idx)
                 o, de = d['origin_id'], d['destination_id']
                 if o in (set(AIRPORTS) | {'LAND'}) and de.startswith('F'):
                     compat_ob[ri_idx][de] = compat_ob[ri_idx].get(de, 0) + 1
@@ -545,6 +565,11 @@ class Q3DailySolver:
             terms = [ys[(ri, f1, f2)] for ri in range(len(routes_info)) if (ri, f1, f2) in ys]
             if terms:
                 model.addConstr(cp.quicksum(terms) == len(dlist))
+
+        # 个人级覆盖约束（修复紧需求漏配）
+        for pid, ri_list in demand_routes.items():
+            if ri_list:
+                model.addConstr(cp.quicksum(x[ri] for ri in ri_list) >= 1)
 
         # 起点感知约束
         for f, dlist in ob_by_fac.items():
@@ -678,6 +703,7 @@ class Q3DailySolver:
         compat_ob = defaultdict(dict)  # compat_ob[ri_idx][fac] = count
         compat_ib = defaultdict(dict)
         compat_sh = defaultdict(dict)
+        demand_routes = defaultdict(list)  # person_id -> 兼容路径索引
 
         for ri_idx, ri in enumerate(routes_info):
             r = ri['route']
@@ -689,6 +715,7 @@ class Q3DailySolver:
 
             # 统计兼容需求
             for d in ri['compatible_demands']:
+                demand_routes[d['person_id']].append(ri_idx)
                 o, de = d['origin_id'], d['destination_id']
                 if o in (set(AIRPORTS) | {'LAND'}) and de.startswith('F'):
                     compat_ob[ri_idx][de] = compat_ob[ri_idx].get(de, 0) + 1
@@ -731,6 +758,14 @@ class Q3DailySolver:
                 model.addConstr(cp.quicksum(terms) == len(dlist))
             else:
                 print(f"  警告: 穿梭({f1},{f2})无覆盖路径!")
+
+        # --- 约束1.5: 个人级覆盖（修复紧需求被设施级人数约束掩盖而漏配的问题） ---
+        n_person_constr = 0
+        for pid, ri_list in demand_routes.items():
+            if ri_list:
+                model.addConstr(cp.quicksum(x[ri] for ri in ri_list) >= 1)
+                n_person_constr += 1
+        print(f"  个人级覆盖约束: {n_person_constr}条")
 
         # --- 约束2: 起点感知 ---
         for f, dlist in ob_by_fac.items():
@@ -863,20 +898,20 @@ class Q3DailySolver:
             for ri_idx in range(len(routes_info)):
                 start_vars.append(x[ri_idx])
                 start_vals.append(1.0 if ri_idx in selected else 0.0)
-            # 出海/海返/穿梭人员分配变量
-            for (ri_idx, f), v in yo_ws.items():
-                if (ri_idx, f) in yo:
-                    start_vars.append(yo[(ri_idx, f)])
-                    start_vals.append(float(v))
-            for (ri_idx, f), v in yi_ws.items():
-                if (ri_idx, f) in yi:
-                    start_vars.append(yi[(ri_idx, f)])
-                    start_vals.append(float(v))
-            for (ri_idx, f1, f2), v in ys_ws.items():
-                if (ri_idx, f1, f2) in ys:
-                    start_vars.append(ys[(ri_idx, f1, f2)])
-                    start_vals.append(float(v))
+            # 出海/海返/穿梭人员分配变量（完整提供，缺失补零）
+            for key, var in yo.items():
+                start_vars.append(var)
+                start_vals.append(float(yo_ws.get(key, 0)))
+            for key, var in yi.items():
+                start_vars.append(var)
+                start_vals.append(float(yi_ws.get(key, 0)))
+            for key, var in ys.items():
+                start_vars.append(var)
+                start_vals.append(float(ys_ws.get(key, 0)))
             if start_vars:
+                # 显式开启 MipStart，并允许求解器修复轻微不可行的起始解
+                model.setParam(cp.COPT.Param.MipStartMode, 1)
+                model.setParam(cp.COPT.Param.MipRepair, 1)
                 model.setMipStart(start_vars, start_vals)
                 print(f"  热启动注入: {len(start_vars)} 个变量 "
                       f"(选中路径 {len(selected)} 条)")
@@ -1279,6 +1314,8 @@ class Q3OutputWriter:
                     compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
                     if compat:
                         compatible.append((d, pidx, didx))
+                # 紧需求优先：最晚到达时间早的需求优先占用名额，避免被跨天宽需求挤占
+                compatible.sort(key=lambda x: x[0]['latest_arrival'])
                 for d, pidx, didx in compatible[:cnt]:
                     person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
                     assigned_persons.add(d['person_id'])
@@ -1296,6 +1333,7 @@ class Q3OutputWriter:
                     compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
                     if compat:
                         compatible.append((d, pidx, didx))
+                compatible.sort(key=lambda x: x[0]['latest_arrival'])
                 for d, pidx, didx in compatible[:cnt]:
                     person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
                     assigned_persons.add(d['person_id'])
@@ -1310,6 +1348,7 @@ class Q3OutputWriter:
                     compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
                     if compat:
                         compatible.append((d, pidx, didx))
+                compatible.sort(key=lambda x: x[0]['latest_arrival'])
                 for d, pidx, didx in compatible[:cnt]:
                     person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
                     assigned_persons.add(d['person_id'])
