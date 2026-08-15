@@ -517,28 +517,64 @@ class OutputWriter:
 
         result = {}  # {person_id: (route, delivery_stop)}
         for route in selected_routes:
+            route_cap = route.capacity
+            route_used = 0
+            # 先按设施计算各设施限额 n_f，但确保 sum(n_f) <= capacity
+            per_fac_limit = {}
+            fac_total = sum(max(0, assignments.get((route.route_id, f), 0))
+                            for f in route.dest_facilities)
+            if fac_total <= route_cap:
+                for f in route.dest_facilities:
+                    per_fac_limit[f] = assignments.get((route.route_id, f), 0)
+            else:
+                # MIP 解异常（总人数 > capacity）：按比例缩放，硬保总容量
+                scale = route_cap / fac_total if fac_total > 0 else 0
+                scaled_sum = 0
+                for f in route.dest_facilities:
+                    raw = assignments.get((route.route_id, f), 0)
+                    scaled = min(raw, int(raw * scale))
+                    per_fac_limit[f] = scaled
+                    scaled_sum += scaled
+                # 剩余名额按设施限额顺序补足到 capacity
+                if scaled_sum < route_cap:
+                    for f in route.dest_facilities:
+                        gap = min(
+                            assignments.get((route.route_id, f), 0) - per_fac_limit[f],
+                            route_cap - scaled_sum)
+                        if gap > 0:
+                            per_fac_limit[f] += gap
+                            scaled_sum += gap
+                        if scaled_sum >= route_cap:
+                            break
+
             for f in route.dest_facilities:
-                n = assignments.get((route.route_id, f), 0)
-                if n == 0:
+                n = per_fac_limit.get(f, 0)
+                if n <= 0:
                     continue
                 delivery_stop = route.path.index(f)
+                # 该设施还能分配的人数，同时受限于 n 和 总剩余容量
+                allowed = min(n, route_cap - route_used)
+                if allowed <= 0:
+                    continue
                 assigned = 0
                 # 第一轮：起点匹配
                 for p in pending[f]:
-                    if assigned >= n:
+                    if assigned >= allowed:
                         break
                     if not p['done'] and p['origin'] == route.airport:
                         result[p['pid']] = (route, delivery_stop)
                         p['done'] = True
                         assigned += 1
+                        route_used += 1
                 # 第二轮：LAND补充
                 for p in pending[f]:
-                    if assigned >= n:
+                    if assigned >= allowed:
                         break
                     if not p['done'] and p['origin'] == 'LAND':
                         result[p['pid']] = (route, delivery_stop)
                         p['done'] = True
                         assigned += 1
+                        route_used += 1
         return result
 
     @staticmethod
