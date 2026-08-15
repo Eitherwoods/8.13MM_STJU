@@ -734,74 +734,83 @@ class Q2OutputWriter:
 
         result = {}  # {person_id: (route, pickup_pos, delivery_pos)}
 
-        # 分配出海人员
         for route in selected_routes:
             pre = self.precomputed[route.route_id]
-            for f, pos in pre['facility_pos'].items():
-                n = yo_vals.get((route.route_id, f), 0)
-                if n == 0 or f not in out_pending:
-                    continue
-                assigned = 0
-                # 第一轮：起点匹配
-                for p in out_pending[f]:
-                    if assigned >= n:
-                        break
-                    if not p['done'] and p['origin'] == route.airport:
-                        result[p['pid']] = (route, 0, pos)
-                        p['done'] = True
-                        assigned += 1
-                # 第二轮：LAND补充
-                for p in out_pending[f]:
-                    if assigned >= n:
-                        break
-                    if not p['done'] and p['origin'] == 'LAND':
-                        result[p['pid']] = (route, 0, pos)
-                        p['done'] = True
-                        assigned += 1
+            n_seg = len(route.path) - 1
+            # 每条航段剩余可用座位（航段级容量保护）
+            seg_remaining = [route.capacity] * n_seg if n_seg > 0 else []
 
-        # 分配海返人员
-        for route in selected_routes:
-            pre = self.precomputed[route.route_id]
+            def seg_available(pidx, didx):
+                """检查区间 [pidx, didx) 所有航段是否还有座位，返回最小剩余数"""
+                if n_seg == 0:
+                    return 0
+                if pidx >= didx:
+                    return 0
+                mn = float('inf')
+                for k in range(pidx, didx):
+                    if k >= n_seg:
+                        return 0
+                    if seg_remaining[k] < mn:
+                        mn = seg_remaining[k]
+                return 0 if mn <= 0 else mn
+
+            def consume_seg(pidx, didx):
+                """占用区间 [pidx, didx) 所有航段各 1 个座位"""
+                for k in range(pidx, didx):
+                    seg_remaining[k] -= 1
+
+            def assign_candidate(cand, pidx, didx, target_n, assigned_count):
+                """尝试为候选人员分配，检查区间剩余座位"""
+                for p in cand:
+                    if assigned_count[0] >= target_n:
+                        break
+                    if not p['done'] and seg_available(pidx, didx) > 0:
+                        result[p['pid']] = (route, pidx, didx)
+                        p['done'] = True
+                        consume_seg(pidx, didx)
+                        assigned_count[0] += 1
+
+            # ---- 出海 ----
+            for f, pos in pre['facility_pos'].items():
+                n_yo = yo_vals.get((route.route_id, f), 0)
+                if n_yo == 0 or f not in out_pending:
+                    continue
+                pidx = 0
+                didx = pos
+                assigned = [0]
+                cands_origin = [p for p in out_pending[f]
+                                if not p['done'] and p['origin'] == route.airport]
+                assign_candidate(cands_origin, pidx, didx, n_yo, assigned)
+                cands_land = [p for p in out_pending[f]
+                              if not p['done'] and p['origin'] == 'LAND']
+                assign_candidate(cands_land, pidx, didx, n_yo, assigned)
+
+            # ---- 海返 ----
             last_pos = len(route.path) - 1
             for f, pos in pre['facility_pos'].items():
-                n = yi_vals.get((route.route_id, f), 0)
-                if n == 0 or f not in in_pending:
+                n_yi = yi_vals.get((route.route_id, f), 0)
+                if n_yi == 0 or f not in in_pending:
                     continue
-                assigned = 0
-                # 第一轮：终点匹配
-                for p in in_pending[f]:
-                    if assigned >= n:
-                        break
-                    if not p['done'] and p['dest'] == route.airport:
-                        result[p['pid']] = (route, pos, last_pos)
-                        p['done'] = True
-                        assigned += 1
-                # 第二轮：LAND补充
-                for p in in_pending[f]:
-                    if assigned >= n:
-                        break
-                    if not p['done'] and p['dest'] == 'LAND':
-                        result[p['pid']] = (route, pos, last_pos)
-                        p['done'] = True
-                        assigned += 1
+                pidx = pos
+                didx = last_pos
+                assigned = [0]
+                cands_dest = [p for p in in_pending[f]
+                              if not p['done'] and p['dest'] == route.airport]
+                assign_candidate(cands_dest, pidx, didx, n_yi, assigned)
+                cands_land = [p for p in in_pending[f]
+                              if not p['done'] and p['dest'] == 'LAND']
+                assign_candidate(cands_land, pidx, didx, n_yi, assigned)
 
-        # 分配穿梭人员
-        for route in selected_routes:
-            pre = self.precomputed[route.route_id]
+            # ---- 穿梭 ----
             for (f1, f2) in pre['shuttle_info']:
-                n = ys_vals.get((route.route_id, f1, f2), 0)
-                if n == 0 or (f1, f2) not in shut_pending:
+                n_ys = ys_vals.get((route.route_id, f1, f2), 0)
+                if n_ys == 0 or (f1, f2) not in shut_pending:
                     continue
                 pos1 = pre['facility_pos'][f1]
                 pos2 = pre['facility_pos'][f2]
-                assigned = 0
-                for p in shut_pending[(f1, f2)]:
-                    if assigned >= n:
-                        break
-                    if not p['done']:
-                        result[p['pid']] = (route, pos1, pos2)
-                        p['done'] = True
-                        assigned += 1
+                assigned = [0]
+                cands = [p for p in shut_pending[(f1, f2)] if not p['done']]
+                assign_candidate(cands, pos1, pos2, n_ys, assigned)
 
         return result
 

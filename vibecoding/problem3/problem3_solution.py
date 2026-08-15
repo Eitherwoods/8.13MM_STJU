@@ -1265,26 +1265,48 @@ class Q3OutputWriter:
 
     @staticmethod
     def write_assignments(flights, all_demands, temp_satisfied, temp_unsatisfied, output_dir):
-        """写入q3-assignments.csv"""
+        """写入q3-assignments.csv（含航段级容量保护）"""
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, 'q3-assignments.csv')
 
         # 构建人员→架次映射
         person_to_flight = {}
+
+        # 初始化每个架次的航段剩余容量，并登记临时任务（已在phase2验证过容量）
+        flight_seg_remain = []
         for fi, flight in enumerate(flights):
-            ri = flight['route_info']
-            r = ri['route']
-            path_list = r.path
-            # 出海
-            for (idx, fac), cnt in flight.get('yo', {}).items():
-                # 需要从all_demands中找到对应人员
-                pass  # 后续匹配
-            # 临时任务
-            for d in temp_satisfied:
-                if d.get('_flight_idx') == fi:
-                    person_to_flight[d['person_id']] = (
-                        flight['aircraft_id'], flight['flight_no'],
-                        d['_pickup_idx'], d['_delivery_idx'])
+            r = flight['route_info']['route']
+            n_seg = max(0, len(r.path) - 1)
+            seg_remain = [r.capacity] * n_seg if n_seg > 0 else []
+            flight_seg_remain.append(seg_remain)
+
+        # 辅助：检查区间是否都有座位 / 占用座位
+        def seg_has_space(fi, pidx, didx):
+            sr = flight_seg_remain[fi]
+            if not sr or pidx >= didx:
+                return False
+            for k in range(pidx, didx):
+                if k >= len(sr) or sr[k] <= 0:
+                    return False
+            return True
+
+        def seg_consume(fi, pidx, didx):
+            sr = flight_seg_remain[fi]
+            for k in range(pidx, didx):
+                sr[k] -= 1
+
+        # 临时任务（phase2 已通过 flight_loads 检查）
+        for d in temp_satisfied:
+            fi = d.get('_flight_idx')
+            if fi is None or fi < 0 or fi >= len(flights):
+                continue
+            flight = flights[fi]
+            pidx = d['_pickup_idx']
+            didx = d['_delivery_idx']
+            person_to_flight[d['person_id']] = (
+                flight['aircraft_id'], flight['flight_no'], pidx, didx)
+            # 占用对应航段座位
+            seg_consume(fi, pidx, didx)
 
         # 构建非临时人员的分配：按日期+OD分组，避免全量扫描
         temp_ids = {d['person_id'] for d in temp_satisfied + temp_unsatisfied}
@@ -1307,155 +1329,138 @@ class Q3OutputWriter:
                 day_sh[ad][(o, de)].append(d)
 
         assigned_persons = set()
-        for fi, flight in enumerate(flights):
+
+        def process_one_flight(fi, day_map, feasible_day_check=None):
+            """
+            处理一个架次的 OB/IB/SH 具体人员分配：
+            - day_map: {OB: day_ob[day], IB: day_ib[day], SH: day_sh[day]}
+                     或 unmatched_by_od
+            - feasible_day_check: 若不为 None，则 callable(demand) -> bool，必须返回 True 才尝试
+            """
+            flight = flights[fi]
             ri = flight['route_info']
             r = ri['route']
             schedule = ri['schedule']
             day = flight['day']
             ac_id = flight.get('aircraft_id') or 'UNASSIGNED'
             fn = flight.get('flight_no') or 0
+            ob_map = day_map['ob']
+            ib_map = day_map['ib']
+            sh_map = day_map['sh']
 
-            # 出海
+            def try_assign(typ, key, cnt):
+                """typ='ob'|'ib'|'sh', key=fac|(f1,f2), cnt=该类配额上限，返回实际分配数"""
+                if cnt <= 0:
+                    return 0
+                if typ == 'ob':
+                    cands_src = ob_map.get(key, [])
+                elif typ == 'ib':
+                    cands_src = ib_map.get(key, [])
+                else:
+                    cands_src = sh_map.get(key, [])
+                compatible = []
+                for d in cands_src:
+                    if d['person_id'] in assigned_persons:
+                        continue
+                    # OD 端点校验
+                    if typ == 'ob':
+                        o = d['origin_id']
+                        if o != 'LAND' and o != r.airport:
+                            continue
+                    elif typ == 'ib':
+                        de = d['destination_id']
+                        if de != 'LAND' and de != r.airport:
+                            continue
+                    if feasible_day_check is not None and not feasible_day_check(d):
+                        continue
+                    compat, pidx, didx = Q3ScheduleHelper.check_compatibility(
+                        d, r, schedule, day)
+                    if compat and seg_has_space(fi, pidx, didx):
+                        compatible.append((d, pidx, didx))
+                compatible.sort(key=lambda x: x[0]['latest_arrival'])
+                added = 0
+                for d, pidx, didx in compatible:
+                    if added >= cnt:
+                        break
+                    # 再次检查（顺序分配可能导致之前的名额被占用）
+                    if not seg_has_space(fi, pidx, didx):
+                        continue
+                    person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
+                    assigned_persons.add(d['person_id'])
+                    seg_consume(fi, pidx, didx)
+                    added += 1
+                return added
+
+            # OB
             for (_, fac), cnt in flight.get('yo', {}).items():
-                candidates = day_ob.get(day, {}).get(fac, [])
-                compatible = []
-                for d in candidates:
-                    if d['person_id'] in assigned_persons:
-                        continue
-                    o = d['origin_id']
-                    if o != 'LAND' and o != r.airport:
-                        continue
-                    compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
-                    if compat:
-                        compatible.append((d, pidx, didx))
-                # 紧需求优先：最晚到达时间早的需求优先占用名额，避免被跨天宽需求挤占
-                compatible.sort(key=lambda x: x[0]['latest_arrival'])
-                for d, pidx, didx in compatible[:cnt]:
-                    person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                    assigned_persons.add(d['person_id'])
-
-            # 海返
+                try_assign('ob', fac, cnt)
+            # IB
             for (_, fac), cnt in flight.get('yi', {}).items():
-                candidates = day_ib.get(day, {}).get(fac, [])
-                compatible = []
-                for d in candidates:
-                    if d['person_id'] in assigned_persons:
-                        continue
-                    de = d['destination_id']
-                    if de != 'LAND' and de != r.airport:
-                        continue
-                    compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
-                    if compat:
-                        compatible.append((d, pidx, didx))
-                compatible.sort(key=lambda x: x[0]['latest_arrival'])
-                for d, pidx, didx in compatible[:cnt]:
-                    person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                    assigned_persons.add(d['person_id'])
-
-            # 穿梭
+                try_assign('ib', fac, cnt)
+            # SH
             for (_, f1, f2), cnt in flight.get('ys', {}).items():
-                candidates = day_sh.get(day, {}).get((f1, f2), [])
-                compatible = []
-                for d in candidates:
-                    if d['person_id'] in assigned_persons:
-                        continue
-                    compat, pidx, didx = Q3ScheduleHelper.check_compatibility(d, r, schedule, day)
-                    if compat:
-                        compatible.append((d, pidx, didx))
-                compatible.sort(key=lambda x: x[0]['latest_arrival'])
-                for d, pidx, didx in compatible[:cnt]:
-                    person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                    assigned_persons.add(d['person_id'])
+                try_assign('sh', (f1, f2), cnt)
 
-        # 第二pass：对未匹配的需求放宽时间窗检查（仅OD匹配）
-        unmatched_ob = defaultdict(list)  # fac -> [demand]
-        unmatched_ib = defaultdict(list)
-        unmatched_sh = defaultdict(list)
+        # 第一 pass：按日匹配（_assigned_day）
+        for fi in range(len(flights)):
+            day = flights[fi]['day']
+            dm = {'ob': day_ob.get(day, {}),
+                  'ib': day_ib.get(day, {}),
+                  'sh': day_sh.get(day, {})}
+            process_one_flight(fi, dm, feasible_day_check=None)
+
+        # 第二 pass：对未匹配的需求进行跨可行日的严格匹配
+        unmatched_demands = []
         for d in non_temp:
             if d['person_id'] not in assigned_persons:
                 ad = d.get('_assigned_day')
                 if ad is None:
                     continue
+                unmatched_demands.append(d)
+
+        if unmatched_demands:
+            n_before = len(unmatched_demands)
+            print(f"  二次匹配（严格约束+容量）: {n_before}人待匹配")
+            unmatched_by_od = {
+                'ob': defaultdict(list),
+                'ib': defaultdict(list),
+                'sh': defaultdict(list),
+            }
+            for d in unmatched_demands:
                 o, de = d['origin_id'], d['destination_id']
                 if o in (set(AIRPORTS) | {'LAND'}) and de.startswith('F'):
-                    unmatched_ob[de].append(d)
+                    unmatched_by_od['ob'][de].append(d)
                 elif o.startswith('F') and de in (set(AIRPORTS) | {'LAND'}):
-                    unmatched_ib[o].append(d)
+                    unmatched_by_od['ib'][o].append(d)
                 elif o.startswith('F') and de.startswith('F'):
-                    unmatched_sh[(o, de)].append(d)
+                    unmatched_by_od['sh'][(o, de)].append(d)
 
-        if unmatched_ob or unmatched_ib or unmatched_sh:
-            print(f"  二次匹配: {sum(len(v) for v in unmatched_ob.values()) + sum(len(v) for v in unmatched_ib.values()) + sum(len(v) for v in unmatched_sh.values())}人待匹配")
-            for fi, flight in enumerate(flights):
-                ri = flight['route_info']
-                r = ri['route']
-                path_list = r.path
+            feasible_cache = {}
+            def get_feasible_days(demand):
+                pid = demand['person_id']
+                if pid not in feasible_cache:
+                    days = []
+                    for pd in PLANNING_DATES:
+                        ds = datetime(pd.year, pd.month, pd.day, OPERATION_START_HOUR, 0)
+                        de_t = datetime(pd.year, pd.month, pd.day, RETURN_DEADLINE_HOUR, 0)
+                        if demand['earliest_pickup'] < de_t and demand['latest_arrival'] > ds:
+                            days.append(pd)
+                    feasible_cache[pid] = days
+                return feasible_cache[pid]
+
+            for fi in range(len(flights)):
+                flight = flights[fi]
                 day = flight['day']
-                ac_id = flight.get('aircraft_id') or 'UNASSIGNED'
-                fn = flight.get('flight_no') or 0
 
-                # 出海（放宽匹配）
-                for (_, fac), cnt in flight.get('yo', {}).items():
-                    candidates = unmatched_ob.get(fac, [])
-                    for d in candidates[:]:
-                        if d['person_id'] in assigned_persons:
-                            continue
-                        o = d['origin_id']
-                        if o != 'LAND' and o != r.airport:
-                            continue
-                        # 放宽：仅检查OD在路径中的位置，不检查时间窗
-                        o_actual = r.airport if o == 'LAND' else o
-                        pidx, didx = None, None
-                        for i in range(len(path_list)):
-                            if path_list[i] == o_actual and pidx is None:
-                                pidx = i
-                            if path_list[i] == fac and pidx is not None and i > pidx:
-                                didx = i
-                                break
-                        if pidx is not None and didx is not None:
-                            person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                            assigned_persons.add(d['person_id'])
-                            candidates.remove(d)
+                def check_day(d):
+                    return day in get_feasible_days(d)
 
-                # 海返（放宽匹配）
-                for (_, fac), cnt in flight.get('yi', {}).items():
-                    candidates = unmatched_ib.get(fac, [])
-                    for d in candidates[:]:
-                        if d['person_id'] in assigned_persons:
-                            continue
-                        de = d['destination_id']
-                        if de != 'LAND' and de != r.airport:
-                            continue
-                        de_actual = r.airport if de == 'LAND' else de
-                        pidx, didx = None, None
-                        for i in range(len(path_list)):
-                            if path_list[i] == fac and pidx is None:
-                                pidx = i
-                            if path_list[i] == de_actual and pidx is not None and i > pidx:
-                                didx = i
-                                break
-                        if pidx is not None and didx is not None:
-                            person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                            assigned_persons.add(d['person_id'])
-                            candidates.remove(d)
+                process_one_flight(fi, unmatched_by_od, feasible_day_check=check_day)
 
-                # 穿梭（放宽匹配）
-                for (_, f1, f2), cnt in flight.get('ys', {}).items():
-                    candidates = unmatched_sh.get((f1, f2), [])
-                    for d in candidates[:]:
-                        if d['person_id'] in assigned_persons:
-                            continue
-                        pidx, didx = None, None
-                        for i in range(len(path_list)):
-                            if path_list[i] == f1 and pidx is None:
-                                pidx = i
-                            if path_list[i] == f2 and pidx is not None and i > pidx:
-                                didx = i
-                                break
-                        if pidx is not None and didx is not None:
-                            person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
-                            assigned_persons.add(d['person_id'])
-                            candidates.remove(d)
+            n_rematched = n_before - len(
+                [d for d in unmatched_demands if d['person_id'] not in assigned_persons])
+            print(f"  二次匹配完成: 成功匹配 {n_rematched}/{n_before}人，"
+                  f"未服务 {n_before - n_rematched}人")
 
         # 写入
         with open(path, 'w', newline='', encoding='utf-8') as f:
@@ -1508,6 +1513,8 @@ def main():
     total_pass_km = 0.0
     total_seat_km = 0.0
     total_transit = 0
+    solved_days = set()   # MIP 求解成功的日期集合
+    failed_day_demands = defaultdict(list)  # 失败日 -> 该日原需求
 
     route_id_counter = [0]
     generator = Q3RouteGenerator(distances)
@@ -1526,15 +1533,18 @@ def main():
         print(f"  候选路径: {len(routes_info)}")
 
         if not routes_info:
-            print(f"  警告: {day} 无候选路径!")
+            print(f"  警告: {day} 无候选路径! 该日 {len(day_demands)} 人将重新分配到其他已求解日")
+            failed_day_demands[day] = day_demands
             continue
 
         # 求解MIP
         result = solver.solve(routes_info, day_demands, day, distances)
         if result is None:
-            print(f"  警告: {day} 无可行解!")
+            print(f"  警告: {day} 无可行解! 该日 {len(day_demands)} 人将重新分配到其他已求解日")
+            failed_day_demands[day] = day_demands
             continue
 
+        solved_days.add(day)
         sel_routes, yo_vals, yi_vals, ys_vals = result
         for idx, ri in enumerate(sel_routes):
             ri['route_id'] = ri['route'].route_id
@@ -1577,6 +1587,35 @@ def main():
         n_people = sum(sum(ri['yo'].values()) + sum(ri['yi'].values()) + sum(ri['ys'].values())
                        for ri in sel_routes)
         print(f"  架次: {n_flights}, 人数: {n_people}, 时间: {sum(ri['route'].time for ri in sel_routes)}min")
+
+    # 3.1 失败日需求重分配：转移到其他已成功求解的日期
+    # （更新需求的 _assigned_day，确保 write_assignments 能匹配到可用航班日）
+    if failed_day_demands:
+        print(f"\n[3.1] 失败日需求重分配: {len(failed_day_demands)} 个日期需要处理")
+        # 统计各已求解日当前的"负载"（已服务人数上限 = MIP解中的y之和）
+        day_load = defaultdict(int)
+        for sr in all_selected_routes:
+            day = sr['day']
+            n = (sum(sr['yo'].values()) + sum(sr['yi'].values()) + sum(sr['ys'].values()))
+            day_load[day] += n
+
+        reallocated_total = 0
+        for failed_day, demands in failed_day_demands.items():
+            for d in demands:
+                feasible_in_solved = [pd for pd in solved_days
+                                      if pd in Q3DemandDayAllocator.compute_feasible_days(d, PLANNING_DATES)]
+                if not feasible_in_solved:
+                    # 无可行日：保留 _assigned_day，write_assignments 中二次匹配将严格过滤
+                    reallocated_total += 0
+                    continue
+                # 选择负载最轻的已求解日
+                best_day = min(feasible_in_solved, key=lambda pd: day_load[pd])
+                d['_assigned_day'] = best_day
+                day_load[best_day] += 1
+                reallocated_total += 1
+            print(f"  {failed_day}: {len(demands)}人 -> 成功重分配 {reallocated_total}人 "
+                  f"(剩余无可行日 {len(demands) - reallocated_total}人)")
+        print(f"  重分配完成: {sum(day_load.values())} 人分布于 {sorted([str(d) for d in solved_days])}")
 
     T_star = total_time
     print(f"\n阶段一总飞机使用时间 T* = {T_star} 分钟 ({T_star/60:.1f}h)")
