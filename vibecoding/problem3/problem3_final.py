@@ -96,8 +96,10 @@ COPT_TUNING = {
 }
 
 # 每日时间预算（秒）
-DAY_TIME_LIMIT_1 = 3600     # 第一轮 MIP（智能池）
-DAY_TIME_LIMIT_2 = 1800     # 第二轮 MIP（列生成增强池）
+# 自适应搜索每轮做两层（min T 与二级指标），每层用满 round_time；
+# 故每天理论上限 = 2 * sum(round_times)，实际因 RelGap 提前终止而缩短。
+DAY_TIME_LIMIT_1 = 1200     # 第一轮 MIP（智能池，粗搜）
+DAY_TIME_LIMIT_2 = 600      # 第二轮 MIP（列生成增强池，精搜）
 ALNS_WARM_ITERS = 200       # MIP 前 ALNS 热启动迭代数
 ALNS_POLISH_ITERS = 150     # MIP 后 ALNS 抛光迭代数
 
@@ -251,6 +253,16 @@ def solve_day_final(routes_info, day_demands, day, distances, solver,
     current_routes = routes_info
     current_result = result1
 
+    # 不启用列生成且第一轮失败时：直接降级到 ALNS 解
+    if not use_cg and result1 is None:
+        print("  [降级] MIP 无可行解（未启用列生成），采用 ALNS 解兜底")
+        fallback = alns_solution_to_result(alns_sol, routes_info, day, distances)
+        if fallback is None:
+            return None
+        sel_routes, yo_vals, yi_vals, ys_vals = fallback
+        t_star = sum(ri['route'].time for ri in sel_routes)
+        return sel_routes, yo_vals, yi_vals, ys_vals, t_star, True, routes_info
+
     # ---------- F3 列生成增强 ----------
     if use_cg:
         # 复用 C8 的薄弱设施分析与补列逻辑
@@ -301,7 +313,7 @@ def solve_day_final(routes_info, day_demands, day, distances, solver,
                 t_star = sum(ri['route'].time for ri in sel_routes)
                 return sel_routes, yo_vals, yi_vals, ys_vals, t_star, True, routes_info
             sel, yo, yi, ys, t_star = current_result
-            return sel, yo, yi, ys, t_star, True, current_routes
+            return sel, yo, yi, ys, t_star, False, current_routes
 
         # result1 非 None 分支：第一轮成功后的薄弱设施补列
         sel1, yo1, yi1, ys1, t_star1 = result1
