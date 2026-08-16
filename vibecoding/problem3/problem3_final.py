@@ -80,9 +80,10 @@ FIXED_ESSENTIAL_OFFSETS = [0, 60, 120, 240, 360, 480, 600]
 SMART_MAX_OFFSETS = 10
 
 # 多设施路径剪枝上限（pair/triple/quad/quint）
-# 完整原始值: (300, 300, 600, 900) → 池约 5 万条
-# 精简值:     (150, 150, 300, 450) → 池约 2.2 万条（压缩 56%）
-PRUNE_CAPS = (150, 150, 300, 450)
+# 完整原始值: (300, 300, 600, 900) → 池约 5 万条（可复现 4791 的最优解）
+# 本次取值:   (250, 250, 500, 750) → 池约 3.3 万条
+#             （保留绝大多数高效多停靠路径，同时控制 MIP 规模）
+PRUNE_CAPS = (250, 250, 500, 750)
 PRUNE_CAPS_FAST = (80, 80, 160, 240)
 
 # COPT 调参：针对 10 万级变量模型的经验值（COPT 8.0 参数名）
@@ -96,14 +97,18 @@ COPT_TUNING = {
 }
 
 # 每日时间预算（秒）
-DAY_TIME_LIMIT_1 = 3600     # 第一轮 MIP（智能池）
-DAY_TIME_LIMIT_2 = 1800     # 第二轮 MIP（列生成增强池）
+# 自适应搜索每轮做两层（min T 与二级指标），每层用满 round_time；
+# 故每天理论上限 = 2 * sum(round_times)，实际因 RelGap 提前终止而缩短。
+# 第一轮加长到 40min、精搜 20min，让粗搜充分收敛（收严 RelGap 见 set_round_limits）
+DAY_TIME_LIMIT_1 = 2400     # 第一轮 MIP（智能池，粗搜）
+DAY_TIME_LIMIT_2 = 1200     # 第二轮 MIP（列生成增强池，精搜）
 ALNS_WARM_ITERS = 200       # MIP 前 ALNS 热启动迭代数
 ALNS_POLISH_ITERS = 150     # MIP 后 ALNS 抛光迭代数
 
 # 列生成参数
 CG_WEAK_THRESHOLD = 0.5     # 薄弱设施载客率阈值
-CG_MAX_NEW_ROUTES = 4000    # 补列上限（防止第二轮规模失控）
+CG_MAX_NEW_ROUTES = 8000    # 补列上限（加大：找回更多被剪掉的高效多设施组合）
+CG_WEAK_TOPK = 8            # 参与补列的薄弱设施数量上限（原硬编码 5，加大找回范围）
 
 
 def compute_smart_offsets(day_demands, day, max_offsets=SMART_MAX_OFFSETS):
@@ -156,10 +161,13 @@ class TunedQ3DailySolver(Q3DailySolver):
         参数:
             time_limit_1: 第一轮（粗搜）时限
             time_limit_2: 后续轮次（精搜/极精搜）时限
+
+        收严 RelGap：粗搜 3%（而非默认 5%），让第一轮尽量逼近真最优，
+        避免 1200s 内停在 15% 间隙的超时可行解。
         """
         self.ADAPTIVE_ROUNDS = [
-            (time_limit_1, 0.05, '粗搜'),
-            (time_limit_2, 0.02, '精搜'),
+            (time_limit_1, 0.03, '粗搜'),
+            (time_limit_2, 0.015, '精搜'),
             (time_limit_2, 0.01, '极精搜'),
         ]
         self.TIME_LIMITS = [time_limit_1, time_limit_2]
@@ -251,11 +259,26 @@ def solve_day_final(routes_info, day_demands, day, distances, solver,
     current_routes = routes_info
     current_result = result1
 
+    # 不启用列生成且第一轮失败时：直接降级到 ALNS 解
+    if not use_cg and result1 is None:
+        print("  [降级] MIP 无可行解（未启用列生成），采用 ALNS 解兜底")
+        fallback = alns_solution_to_result(alns_sol, routes_info, day, distances)
+        if fallback is None:
+            return None
+        sel_routes, yo_vals, yi_vals, ys_vals = fallback
+        t_star = sum(ri['route'].time for ri in sel_routes)
+        return sel_routes, yo_vals, yi_vals, ys_vals, t_star, True, routes_info
+
     # ---------- F3 列生成增强 ----------
     if use_cg:
         # 复用 C8 的薄弱设施分析与补列逻辑
+        import column_generation as _cg
         from column_generation import (
             analyze_weak_facilities, generate_new_routes, build_existing_keys)
+        # 同步列生成的模块级上限（覆盖 column_generation.py 硬编码默认值，
+        # 使补列规模与最终版 CG_* 配置一致）
+        _cg.MAX_NEW_ROUTES = CG_MAX_NEW_ROUTES
+        _cg.WEAK_TOPK = CG_WEAK_TOPK
         # 第一轮失败时：基于 ALNS 解分析薄弱设施（不放弃，先补列再重试）
         if result1 is None:
             print("  [列生成] 第一轮 MIP 无解，基于 ALNS 解分析薄弱设施")
@@ -267,7 +290,7 @@ def solve_day_final(routes_info, day_demands, day, distances, solver,
             weak_facs, load_info = analyze_weak_facilities(
                 f_sel, f_yo, routes_info, day_demands)
             weak_facs = [f for f in weak_facs
-                         if load_info[f]['load'] < CG_WEAK_THRESHOLD][:5]
+                         if load_info[f]['load'] < CG_WEAK_THRESHOLD][:CG_WEAK_TOPK]
             if weak_facs:
                 print(f"  [列生成] 薄弱设施: {weak_facs}")
                 rid_counter = [max((ri['route'].route_id for ri in routes_info),
@@ -301,14 +324,14 @@ def solve_day_final(routes_info, day_demands, day, distances, solver,
                 t_star = sum(ri['route'].time for ri in sel_routes)
                 return sel_routes, yo_vals, yi_vals, ys_vals, t_star, True, routes_info
             sel, yo, yi, ys, t_star = current_result
-            return sel, yo, yi, ys, t_star, True, current_routes
+            return sel, yo, yi, ys, t_star, False, current_routes
 
         # result1 非 None 分支：第一轮成功后的薄弱设施补列
         sel1, yo1, yi1, ys1, t_star1 = result1
         weak_facs, load_info = analyze_weak_facilities(
             sel1, yo1, current_routes, day_demands)
         weak_facs = [f for f in weak_facs
-                     if load_info[f]['load'] < CG_WEAK_THRESHOLD][:5]
+                     if load_info[f]['load'] < CG_WEAK_THRESHOLD][:CG_WEAK_TOPK]
         if weak_facs:
             print(f"\n[列生成] 薄弱设施: {weak_facs}")
             rid_counter = [max((ri['route'].route_id for ri in current_routes),
