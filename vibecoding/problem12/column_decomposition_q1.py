@@ -26,10 +26,10 @@
      与官方方案完全一致。
 
 运行（Powershell）:
-  E:\\Python\\python.exe column_decomposition_q1.py
-  E:\\Python\\python.exe column_decomposition_q1.py --smoke          # 快速自检
-  E:\\Python\\python.exe column_decomposition_q1.py --no-stage2-cg   # 跳过阶段二定价
-  E:\\Python\\python.exe column_decomposition_q1.py --lagrangian      # 启用乘子驱动列生成（允许长时间运行）
+  python column_decomposition_q1.py
+  python column_decomposition_q1.py --smoke          # 快速自检
+  python column_decomposition_q1.py --no-stage2-cg   # 跳过阶段二定价
+  python column_decomposition_q1.py --lagrangian      # 启用乘子驱动列生成（允许长时间运行）
 """
 
 import csv

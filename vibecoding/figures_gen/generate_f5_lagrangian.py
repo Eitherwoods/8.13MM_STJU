@@ -4,7 +4,7 @@
 功能: 运行拉格朗日松弛求解器并生成收敛曲线图 (F5)
 项目: 2026策联杯 B题
 
-使用方法: E:\\Python\\python.exe generate_f5_lagrangian.py
+使用方法: python generate_f5_lagrangian.py
 预计耗时: 5-8分钟 (需要COPT求解器)
 """
 

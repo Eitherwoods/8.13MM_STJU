@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 生成敏感性分析和深度洞察图表
 包含: 权重敏感性热力图、最优性间隙、座位复用机制
@@ -19,7 +19,7 @@ rcParams['axes.unicode_minus'] = False
 rcParams['figure.dpi'] = 150
 
 # 路径配置
-BASE_DIR = Path(r"D:\数模\26策联杯\8.13MM_STJU")
+BASE_DIR = Path(__file__).resolve().parents[2]  # 项目根目录（动态定位，原为硬编码绝对路径）
 OUTPUT_DIR = BASE_DIR / "figures" / "Problem3" / "extra"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -5,12 +5,15 @@
       T<=T* 硬约束下二级优化均正常工作
 """
 
+import os
 import sys
 import time
 from datetime import date
 
-sys.path.insert(0, r'D:\数模\26策联杯\8.13MM_STJU\vibecoding')
-sys.path.insert(0, r'D:\数模\26策联杯\8.13MM_STJU\vibecoding\problem3')
+_HERE = os.path.dirname(os.path.abspath(__file__))   # 本文件所在目录 problem3/
+_VIBE = os.path.dirname(_HERE)                        # vibecoding/
+sys.path.insert(0, _VIBE)
+sys.path.insert(0, _HERE)
 
 from problem3_solution import (Q3DataLoader, Q3DemandDayAllocator,
                                Q3RouteGenerator, Q3DailySolver,

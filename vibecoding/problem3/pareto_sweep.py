@@ -13,7 +13,7 @@
     在同一可行域上对比不同加权目标的效果。
 
 运行方式:
-    E:\\Python\\python.exe pareto_sweep.py
+    python pareto_sweep.py
 """
 
 import sys
