@@ -31,7 +31,7 @@ def main():
     routes_info = gen.generate_daily_routes(day_demands, day, route_id_start=1)
     print('候选路径:', len(routes_info))
 
-    Q3DailySolver.TWO_STAGE_TIME_LIMITS = [30, 60]
+    Q3DailySolver.TWO_STAGE_TIME_LIMITS = [7200, 7200]
     Q3DailySolver.LOG_TO_CONSOLE = 1
     solver = Q3DailySolver()
     t0 = time.time()

@@ -352,7 +352,7 @@ class LagrangianBoundAnalyzer:
         except Exception:
             return None
 
-    def solve_lp_relaxation(self, time_limit: int = 120) -> Optional[float]:
+    def solve_lp_relaxation(self, time_limit: int = 7200) -> Optional[float]:
         """
         求解LP松弛下界
 
@@ -393,7 +393,7 @@ class LagrangianBoundAnalyzer:
         print(f"  求解耗时: {t1 - t0:.1f}s, 状态={model.status}")
         return lp_bound
 
-    def solve_mip(self, time_limit: int = 120, rel_gap: float = 0.15) -> Tuple[Optional[float], Optional[float]]:
+    def solve_mip(self, time_limit: int = 7200, rel_gap: float = 0.01) -> Tuple[Optional[float], Optional[float]]:
         """
         求解MIP（含机队约束，保持整数）
 
@@ -434,7 +434,7 @@ class LagrangianBoundAnalyzer:
         return mip_obj, mip_bestbound
 
     def solve_lagrangian(self, ub: float, max_iters: int = 25,
-                         time_limit_per_iter: int = 30,
+                         time_limit_per_iter: int = 7200,
                          beta_init: float = 1.0, beta_min: float = 0.1,
                          beta_decay: float = 0.95) -> Tuple[Optional[float], List[Dict]]:
         """
@@ -749,21 +749,21 @@ def main():
 
     # ========== 6. 求解MIP ==========
     print("\n[6] 求解MIP(上界)...")
-    mip_obj, copt_bound = analyzer.solve_mip(time_limit=120, rel_gap=0.15)
+    mip_obj, copt_bound = analyzer.solve_mip(time_limit=7200, rel_gap=0.01)
     if mip_obj is None:
         print("  MIP求解失败，退出")
         return
 
     # ========== 7. LP松弛下界 ==========
     print("\n[7] 计算LP松弛下界...")
-    lp_bound = analyzer.solve_lp_relaxation(time_limit=120)
+    lp_bound = analyzer.solve_lp_relaxation(time_limit=7200)
 
     # ========== 8. 拉格朗日下界 ==========
     print("\n[8] 计算拉格朗日松弛下界...")
     lag_bound, lag_history = analyzer.solve_lagrangian(
         ub=mip_obj,
         max_iters=25,
-        time_limit_per_iter=30,
+        time_limit_per_iter=7200,
     )
 
     # ========== 9. 汇总输出 ==========

@@ -91,7 +91,7 @@ def main():
 
     # ========== 6. 求解MIP (上界) ==========
     print('\n[6] 求解MIP(上界)...')
-    mip_obj, copt_bound = analyzer.solve_mip(time_limit=60, rel_gap=0.2)
+    mip_obj, copt_bound = analyzer.solve_mip(time_limit=7200, rel_gap=0.01)
     if mip_obj is None:
         print('  MIP求解失败，退出')
         return
@@ -101,14 +101,14 @@ def main():
 
     # ========== 7. 计算LP松弛下界 ==========
     print('\n[7] 计算LP松弛下界...')
-    lp_bound = analyzer.solve_lp_relaxation(time_limit=60)
+    lp_bound = analyzer.solve_lp_relaxation(time_limit=7200)
 
     # ========== 8. 拉格朗日松弛 (减少参数以加速) ==========
-    print('\n[8] 计算拉格朗日松弛下界 (max_iters=20, time/iter=15s)...')
+    print('\n[8] 计算拉格朗日松弛下界 (max_iters=20, time/iter=7200s)...')
     lag_bound, lag_history = analyzer.solve_lagrangian(
         ub=mip_obj,
         max_iters=20,
-        time_limit_per_iter=15,
+        time_limit_per_iter=7200,
     )
 
     # ========== 9. 保存历史到CSV ==========

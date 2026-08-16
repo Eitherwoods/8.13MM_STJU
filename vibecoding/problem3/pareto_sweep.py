@@ -250,10 +250,10 @@ def main():
     print("\n[4] 加速设置...")
     # Dinkelbach 迭代次数设为 1（单次求解，不做利用率收敛迭代）
     Q3DailySolver.DINKELBACH_MAX_ITERS = 1
-    # 单次求解时间限制 60 秒
-    Q3DailySolver.TIME_LIMITS = [60]
-    # 失败重试时间也缩短为 60 秒，避免长时间等待
-    Q3DailySolver.RETRY_TIME_LIMIT = 60
+    # 单次求解时间限制 7200 秒（2小时）
+    Q3DailySolver.TIME_LIMITS = [7200]
+    # 失败重试时间限制 7200 秒（2小时）
+    Q3DailySolver.RETRY_TIME_LIMIT = 7200
     # 确保使用加权单目标模式
     Q3DailySolver.USE_WEIGHTED = True
     # Pareto 扫描为权重灵敏度对比实验，关闭两层模式（保持加权单目标口径）

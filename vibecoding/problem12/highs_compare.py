@@ -20,7 +20,7 @@ import highspy
 from base_models import DataLoader
 from problem1_solution import RouteGenerator
 
-SOLVE_TIME_LIMIT = 60
+SOLVE_TIME_LIMIT = 7200
 
 
 def load_data():
@@ -45,7 +45,7 @@ def _build_copt_model(routes, demands_by_facility, relax=False):
     env = cp.Envr()
     model = env.createModel('Q1_Stage1')
     model.setParam(cp.COPT.Param.TimeLimit, SOLVE_TIME_LIMIT)
-    model.setParam(cp.COPT.Param.RelGap, 0.03)
+    model.setParam(cp.COPT.Param.RelGap, 0.01)
     model.setParam(cp.COPT.Param.LogToConsole, 0)
 
     vtype_x = cp.COPT.CONTINUOUS if relax else cp.COPT.BINARY

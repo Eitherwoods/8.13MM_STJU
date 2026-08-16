@@ -118,10 +118,10 @@ class _BaseTwoStage:
     STAGE2_USE_WARM = True      # 阶段二是否使用阶段一解作为 MIP 起点
 
     # 求解参数默认值（子类可覆盖）
-    STAGE1_TIME_LIMIT = 300
-    STAGE2_TIME_LIMIT = 600
-    STAGE1_REL_GAP = 0.03
-    STAGE2_REL_GAP = 0.03
+    STAGE1_TIME_LIMIT = 7200
+    STAGE2_TIME_LIMIT = 7200
+    STAGE1_REL_GAP = 0.01
+    STAGE2_REL_GAP = 0.01
 
     def __init__(self, weights, eps=EPS_TOL):
         self.weights = weights          # (w_transit, w_util, w_fuel)
@@ -488,10 +488,10 @@ class TwoStageSolverQ1(_BaseTwoStage):
             min w_tau·(τ/τ0) + w_util·(W/W0) + w_fuel·(F/F0)
     """
 
-    STAGE1_TIME_LIMIT = 300     # 阶段一求解时间限制(秒)
-    STAGE2_TIME_LIMIT = 600     # 阶段二求解时间限制(秒)
-    STAGE1_REL_GAP = 0.03       # 阶段一相对间隙
-    STAGE2_REL_GAP = 0.03       # 阶段二相对间隙
+    STAGE1_TIME_LIMIT = 7200    # 阶段一求解时间限制(秒)，2小时
+    STAGE2_TIME_LIMIT = 7200    # 阶段二求解时间限制(秒)，2小时
+    STAGE1_REL_GAP = 0.01       # 阶段一相对间隙
+    STAGE2_REL_GAP = 0.01       # 阶段二相对间隙
 
     def solve(self, routes, demands_by_facility, out_dir, use_explicit_constraint=False):
         """
@@ -612,10 +612,10 @@ class TwoStageSolverQ2(_BaseTwoStage):
     阶段二目标中的在途时间与浪费座公里覆盖出海/海返/穿梭三类需求。
     """
 
-    STAGE1_TIME_LIMIT = 360     # 阶段一求解时间限制(秒)
-    STAGE2_TIME_LIMIT = 1200    # 阶段二求解时间限制(秒)
-    STAGE1_REL_GAP = 0.05       # 阶段一相对间隙（保证 T* 质量）
-    STAGE2_REL_GAP = 0.10       # 阶段二相对间隙（时间层尽快收尾，给 AHP 层留时间）
+    STAGE1_TIME_LIMIT = 7200    # 阶段一求解时间限制(秒)，2小时
+    STAGE2_TIME_LIMIT = 7200    # 阶段二求解时间限制(秒)，2小时
+    STAGE1_REL_GAP = 0.01       # 阶段一相对间隙
+    STAGE2_REL_GAP = 0.01       # 阶段二相对间隙
     STAGE2_USE_WARM = False     # Q2 阶段二不使用热启动（经验上热启动反而降低搜索效果）
 
     def solve(self, routes, precomputed, outbound_demand, inbound_demand,

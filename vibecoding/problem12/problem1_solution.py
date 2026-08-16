@@ -254,7 +254,7 @@ class COPTSolver:
     DINKELBACH_MAX_ITERS = 3        # 最大迭代次数
     DINKELBACH_TOL = 0.002          # 收敛阈值
     LAMBDA_INIT = 0.45              # 初始利用率估计
-    TIME_LIMITS = [300, 300, 600]   # 每次迭代的求解时间限制(秒)
+    TIME_LIMITS = [7200, 7200, 7200]   # 每次迭代的求解时间限制(秒)，2小时
 
     @staticmethod
     def _has_solution(model):
@@ -338,7 +338,7 @@ class COPTSolver:
         env = cp.Envr()
         model = env.createModel('Q1_SetPartitioning')
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
-        model.setParam(cp.COPT.Param.RelGap, 0.05)
+        model.setParam(cp.COPT.Param.RelGap, 0.01)
         model.setParam(cp.COPT.Param.LogToConsole, 0)
 
         # --- 创建变量 ---
@@ -399,7 +399,7 @@ class COPTSolver:
         if transit_terms:
             transit_expr = cp.quicksum(transit_terms)
             model.setObjectiveN(1, transit_expr, sense=cp.COPT.MINIMIZE,
-                                priority=7, reltol=0.03)
+                                priority=7, reltol=0.01)
             print("    [优先级7]  最小化人员总在途时间")
 
         # 目标2: 最大化座位利用率 — Dinkelbach线性化
@@ -415,13 +415,13 @@ class COPTSolver:
                                   for r in routes)
         util_expr = lam * seatkm_expr - passkm_expr
         model.setObjectiveN(2, util_expr, sense=cp.COPT.MINIMIZE,
-                            priority=4, reltol=0.03)
+                            priority=4, reltol=0.01)
         print(f"    [优先级4]  最大化座位利用率 (Dinkelbach: λ={lam:.4f})")
 
         # 目标3(最低优先级): 最小化总燃油消耗量 — 其他因素
         fuel_expr = cp.quicksum(r.fuel * x[r.route_id] for r in routes)
         model.setObjectiveN(3, fuel_expr, sense=cp.COPT.MINIMIZE,
-                            priority=1, reltol=0.05)
+                            priority=1, reltol=0.01)
         print("    [优先级1]  最小化总燃油消耗量")
 
         # --- 求解 ---

@@ -36,7 +36,7 @@ from config import DATA_DIR
 
 # ==================== 全局配置 ====================
 TARGET_DAY = date(2026, 8, 3)
-MIP_TIME_LIMIT = 60          # 单次 MIP 求解时限（秒）
+MIP_TIME_LIMIT = 7200        # 单次 MIP 求解时限（秒），2小时
 ALNS_ITERATIONS = 100        # ALNS 迭代次数
 OUTPUT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

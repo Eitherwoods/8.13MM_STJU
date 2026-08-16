@@ -55,10 +55,10 @@ AHP_MATRIX = [
 
 # ==================== 扫描参数 ====================
 EPSILON_VALUES = [0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.10]
-STAGE1_TIME_LIMIT = 300
-STAGE2_TIME_LIMIT = 180
-STAGE1_REL_GAP = 0.03
-STAGE2_REL_GAP = 0.05
+STAGE1_TIME_LIMIT = 7200
+STAGE2_TIME_LIMIT = 7200
+STAGE1_REL_GAP = 0.01
+STAGE2_REL_GAP = 0.01
 
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output', 'Problem1')
 FIGURE_DIR = os.path.join(PROJECT_DIR, 'figures', 'Problem3', 'extra')

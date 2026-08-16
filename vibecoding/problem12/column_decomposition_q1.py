@@ -482,8 +482,8 @@ class ColumnDecompositionSolverQ1:
 
     def __init__(self, out_dir, smoke=False, do_stage2_cg=True,
                  max_iters=MAX_ITERS, add_top_k=ADD_TOP_K,
-                 limt_time_limit=600, limt_rel_gap=0.005,
-                 limt2_time_limit=900, limt2_rel_gap=0.03,
+                 limt_time_limit=7200, limt_rel_gap=0.005,
+                 limt2_time_limit=7200, limt2_rel_gap=0.01,
                  final_name='列分解+两阶段（本实验）',
                  lagrangian_rounds: int = 0):
         self.out_dir = out_dir
@@ -1212,8 +1212,8 @@ def main():
     do_stage2_cg = '--no-stage2-cg' not in args
     eps = EPS_TOL
     lagrangian_rounds = 3
-    tl1, tl2 = 600, 900
-    gap1, gap2 = 0.005, 0.03
+    tl1, tl2 = 7200, 7200
+    gap1, gap2 = 0.005, 0.01
     out_override = None
     for i, a in enumerate(args):
         if a == '--eps' and i + 1 < len(args):
@@ -1245,12 +1245,12 @@ def main():
     print(f"  输出目录: {out_dir}")
     print("=" * 66)
 
-    # 冒烟模式下调小 MIP 时限与迭代上限
+    # 冒烟模式下使用 2h 时限
     if smoke:
         solver = ColumnDecompositionSolverQ1(
             out_dir, smoke=True, do_stage2_cg=do_stage2_cg, max_iters=5,
-            limt_time_limit=60, limt_rel_gap=0.05,
-            limt2_time_limit=120, limt2_rel_gap=0.05,
+            limt_time_limit=7200, limt_rel_gap=0.01,
+            limt2_time_limit=7200, limt2_rel_gap=0.01,
             final_name='列分解+极限T+两阶段（本实验）' if limt
             else '列分解+两阶段（本实验）',
             lagrangian_rounds=lagrangian_rounds)

@@ -105,13 +105,19 @@ class Q3DemandDayAllocator:
 
     @staticmethod
     def allocate(demands, dates):
-        """贪心分配需求到日期，按可行日期数升序，选负载最低的可行日期"""
+        """
+        贪心分配需求到日期，按可行日期数升序分配。
+        负载度量同时考虑总人数和需求类型（出海/海返/穿梭）分布，
+        避免某日需求类型过度集中导致MIP不可行。
+        """
         demand_days = {}
         for d in demands:
             demand_days[d['person_id']] = Q3DemandDayAllocator.compute_feasible_days(d, dates)
 
         sorted_demands = sorted(demands, key=lambda d: len(demand_days[d['person_id']]))
+
         daily_load = {d: 0 for d in dates}
+        daily_type_load = {d: defaultdict(int) for d in dates}
         allocation = {}
 
         for d in sorted_demands:
@@ -121,10 +127,18 @@ class Q3DemandDayAllocator:
                 target = forced if forced in daily_load else dates[0]
                 allocation[d['person_id']] = target
                 daily_load[target] += 1
+                daily_type_load[target][d['task_type']] += 1
                 continue
-            best_date = min(feasible, key=lambda dd: daily_load[dd])
+
+            def load_key(dd):
+                total = daily_load[dd]
+                type_count = daily_type_load[dd][d['task_type']]
+                return (total, type_count)
+
+            best_date = min(feasible, key=load_key)
             allocation[d['person_id']] = best_date
             daily_load[best_date] += 1
+            daily_type_load[best_date][d['task_type']] += 1
 
         return allocation, daily_load
 
@@ -206,17 +220,19 @@ class Q3ScheduleHelper:
 class Q3RouteGenerator:
     """
     Q3路径生成器：复用节省算法 + 时间窗过滤 + 起飞时刻变体 + 时间窗聚类(C7)
-    
+
     剪枝策略:
-    1. 双设施路径: 节省值排序，取前120对（扩大候选池以提高解质量）
-    2. 三设施路径: 距离阈值 ≤ 100km，数量上限 100条
-    3. 穿梭OD对专用路径: 确保所有有穿梭需求的设施对至少有一条覆盖路径
-    4. 燃油检查剪枝: 通过make_route函数调用FuelChecker.check_fuel，自动应用提前剪枝
-    
+    1. 双设施路径: 节省值排序，取前300对（与Q1规模对齐）
+    2. 三设施路径: 距离阈值 ≤ 100km，数量上限 300条
+    3. 四设施路径: 距离阈值 ≤ 80km，数量上限 300条（从最优三设施扩展）
+    4. 五设施路径: 距离阈值 ≤ 60km，累计上限 300条（从最优四设施扩展）
+    5. 穿梭OD对专用路径: 确保所有有穿梭需求的设施对至少有一条覆盖路径
+    6. 燃油检查剪枝: 通过make_route函数调用FuelChecker.check_fuel，自动应用提前剪枝
+
     设计原理:
-    - Q3是多日排班问题，每天的需求不同，所以路径生成参数相对保守
-    - 通过扩大候选池，可以找到更优的路径组合
-    - 穿梭OD对专用路径确保需求覆盖
+    - Q3有4000人（Q1的2.5倍），路径池必须相应扩大
+    - 4-5设施多停靠路径能显著提升架次效率，降低总飞机使用时间
+    - 渐进式距离阈值保证燃油可行性
     """
 
     def __init__(self, distances):
@@ -292,8 +308,7 @@ class Q3RouteGenerator:
                     if s > 0:
                         savings.append((s, f1, f2))
             savings.sort(reverse=True)
-            # 扩大候选池以提高解质量（从80对扩展到120对）
-            for s, f1, f2 in savings[:120]:
+            for s, f1, f2 in savings[:300]:
                 best_order, _ = TSPSolver.best_order(airport, [f1, f2], self.distances)
                 for atype in AIRCRAFT_TYPES:
                     r = make_route(next_id(), airport, atype, best_order, self.distances)
@@ -308,7 +323,7 @@ class Q3RouteGenerator:
             best_pairs = [min(g, key=lambda r: r.time) for g in pair_groups.values()]
             count = 0
             for r2 in best_pairs:
-                if count >= 60:
+                if count >= 300:
                     break
                 existing = list(r2.dest_facilities)
                 for f3 in fac_list:
@@ -317,6 +332,52 @@ class Q3RouteGenerator:
                     if min(self.distances[f3][f] for f in existing) > 100:
                         continue
                     best_order, _ = TSPSolver.best_order(airport, existing + [f3], self.distances)
+                    for atype in AIRCRAFT_TYPES:
+                        r = make_route(next_id(), airport, atype, best_order, self.distances)
+                        if r is not None:
+                            base_routes.append(r)
+                            count += 1
+
+            # 四设施路径（从最优三设施路径扩展，距离阈值 ≤ 80km）
+            triple_groups = defaultdict(list)
+            for r in base_routes:
+                if r.airport == airport and len(r.dest_facilities) == 3:
+                    key = (r.airport, frozenset(r.dest_facilities))
+                    triple_groups[key].append(r)
+            best_triples = [min(g, key=lambda r: r.time) for g in triple_groups.values()]
+            for r3 in best_triples:
+                if count >= 600:
+                    break
+                existing = list(r3.dest_facilities)
+                for f4 in fac_list:
+                    if f4 in r3.dest_facilities:
+                        continue
+                    if min(self.distances[f4][f] for f in existing) > 80:
+                        continue
+                    best_order, _ = TSPSolver.best_order(airport, existing + [f4], self.distances)
+                    for atype in AIRCRAFT_TYPES:
+                        r = make_route(next_id(), airport, atype, best_order, self.distances)
+                        if r is not None:
+                            base_routes.append(r)
+                            count += 1
+
+            # 五设施路径（从最优四设施路径扩展，距离阈值 ≤ 60km）
+            quad_groups = defaultdict(list)
+            for r in base_routes:
+                if r.airport == airport and len(r.dest_facilities) == 4:
+                    key = (r.airport, frozenset(r.dest_facilities))
+                    quad_groups[key].append(r)
+            best_quads = [min(g, key=lambda r: r.time) for g in quad_groups.values()]
+            for r4 in best_quads:
+                if count >= 900:
+                    break
+                existing = list(r4.dest_facilities)
+                for f5 in fac_list:
+                    if f5 in r4.dest_facilities:
+                        continue
+                    if min(self.distances[f5][f] for f in existing) > 60:
+                        continue
+                    best_order, _ = TSPSolver.best_order(airport, existing + [f5], self.distances)
                     for atype in AIRCRAFT_TYPES:
                         r = make_route(next_id(), airport, atype, best_order, self.distances)
                         if r is not None:
@@ -420,9 +481,9 @@ class Q3DailySolver:
     DINKELBACH_MAX_ITERS = 2
     DINKELBACH_TOL = 0.005
     LAMBDA_INIT = 0.45
-    TIME_LIMITS = [120, 150]
-    TWO_STAGE_TIME_LIMITS = [900, 60]  # 两层模式：第一层严格min T（大幅扩展）/ 第二层固定路径优化二级指标
-    RETRY_TIME_LIMIT = 300  # 失败后重试的时间限制
+    TIME_LIMITS = [7200, 7200]
+    TWO_STAGE_TIME_LIMITS = [7200, 7200]  # 两层模式：第一层严格min T / 第二层固定路径优化二级指标
+    RETRY_TIME_LIMIT = 7200  # 失败后重试的时间限制
     USE_TWO_STAGE = True  # True=严格时间优先两层求解；False=加权单目标（对比实验用）
     USE_WEIGHTED = True  # True=加权单目标, False=字典序多目标
     LOG_TO_CONSOLE = 0  # COPT 日志开关（调试 MipStart 时可临时置 1）
@@ -600,9 +661,9 @@ class Q3DailySolver:
 
     # ==================== 自适应渐进搜索配置（创新点C10） ====================
     ADAPTIVE_ROUNDS = [
-        (300, 0.20, '粗搜'),    # 充足时间找可行解
-        (600, 0.10, '精搜'),    # 中等时间收紧搜索
-        (900, 0.05, '极精搜'),  # 长时间逼近最优
+        (7200, 0.05, '粗搜'),    # 2h找可行解
+        (7200, 0.02, '精搜'),    # 2h收紧搜索
+        (7200, 0.01, '极精搜'),  # 2h逼近最优
     ]
     USE_ADAPTIVE = True  # True=自适应三轮搜索；False=原两层搜索
 
@@ -672,7 +733,7 @@ class Q3DailySolver:
             result2 = self._solve_with_lambda(routes_info, day, distances,
                                               ob_by_fac, ib_by_fac, sh_by_od,
                                               self.LAMBDA_INIT,
-                                              max(30, time_limit // 3),  # 第二层给1/3时限
+                                              time_limit,  # 第二层使用完整时限（2h+）
                                               warm_start=ws_second,
                                               objective='second',
                                               time_cap=t_star,
@@ -708,9 +769,10 @@ class Q3DailySolver:
                 'ys': current_result[3],
             }
 
-            # 如果间隙已经很小，提前终止
-            if rel_gap <= 0.05:
-                print(f"  [{round_name}] 已达到最小间隙，搜索完成")
+            # 如果T*未改善且已到最后一轮，提前终止
+            if round_idx > 0 and current_t_star >= best_t_star:
+                print(f"  [{round_name}] T*未改善，提前终止搜索")
+                break
 
         if best_result is None:
             print("\n  自适应搜索全部失败，进入最终fallback...")
@@ -743,7 +805,7 @@ class Q3DailySolver:
         env = cp.Envr()
         model = env.createModel('Q3_Fallback')
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
-        model.setParam(cp.COPT.Param.RelGap, 0.30)
+        model.setParam(cp.COPT.Param.RelGap, 0.01)
         model.setParam(cp.COPT.Param.LogToConsole, 0)
 
         x = {}
@@ -931,7 +993,7 @@ class Q3DailySolver:
         env = cp.Envr()
         model = env.createModel('Q3_Daily')
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
-        model.setParam(cp.COPT.Param.RelGap, rel_gap if rel_gap is not None else 0.15)
+        model.setParam(cp.COPT.Param.RelGap, rel_gap if rel_gap is not None else 0.01)
         model.setParam(cp.COPT.Param.LogToConsole, self.LOG_TO_CONSOLE)
 
         # --- 变量 ---
@@ -1123,10 +1185,9 @@ class Q3DailySolver:
 
         if objective == 'time':
             # 第一层：严格最小化总飞机使用时间（不掺入任何二级目标）
-            # RelGap 收紧至 1%，让 900s 时限被真正用于逼近最优 T*
-            model.setParam(cp.COPT.Param.RelGap, 0.01)
+            # RelGap 由调用方传入（自适应搜索中由 ADAPTIVE_ROUNDS 控制）
             model.setObjective(time_expr, sense=cp.COPT.MINIMIZE)
-            print(f"  目标: 严格最小化总飞机使用时间")
+            print(f"  目标: 严格最小化总飞机使用时间 (RelGap={rel_gap if rel_gap is not None else 0.01})")
         elif objective == 'second':
             # 第二层：T <= time_cap 硬约束下优化"人员在途时间 + 燃油"加权。
             # 注意不加入利用率项（λ*seat_km - pass_km）：该项使目标矩阵 100%
@@ -1152,13 +1213,13 @@ class Q3DailySolver:
                   f"w_util={self.W_UTIL}, w_fuel={self.W_FUEL}, λ={lam:.4f})")
         else:
             # 字典序四目标
-            model.setObjectiveN(0, time_expr, sense=cp.COPT.MINIMIZE, priority=10, reltol=0.05)
+            model.setObjectiveN(0, time_expr, sense=cp.COPT.MINIMIZE, priority=10, reltol=0.01)
             if transit_terms:
                 model.setObjectiveN(1, transit_expr, sense=cp.COPT.MINIMIZE,
-                                    priority=7, reltol=0.05)
+                                    priority=7, reltol=0.01)
             model.setObjectiveN(2, lam * seatkm_expr - passkm_expr, sense=cp.COPT.MINIMIZE,
-                                priority=4, reltol=0.05)
-            model.setObjectiveN(3, fuel_expr, sense=cp.COPT.MINIMIZE, priority=1, reltol=0.10)
+                                priority=4, reltol=0.01)
+            model.setObjectiveN(3, fuel_expr, sense=cp.COPT.MINIMIZE, priority=1, reltol=0.01)
             print(f"  目标: 字典序四目标 (λ={lam:.4f})")
 
         # --- 热启动注入（ALNS 提供的初始可行解） ---

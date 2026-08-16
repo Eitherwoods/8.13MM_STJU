@@ -92,8 +92,8 @@ class WeightedSolverQ1:
     NORM = {'time': 15808.0, 'transit': 119092.0, 'wasted': 417699.0, 'fuel': 127634.6}
 
     # 求解参数
-    TIME_LIMIT = 180        # 单次求解时间限制(秒)
-    REL_GAP = 0.03          # 相对间隙
+    TIME_LIMIT = 7200        # 单次求解时间限制(秒)，2小时
+    REL_GAP = 0.01          # 相对间隙
 
     @staticmethod
     def _has_solution(model):
@@ -274,8 +274,8 @@ class WeightedSolverQ2:
     NORM = {'time': 18561.0, 'transit': 268468.0, 'wasted': 143861.0, 'fuel': 144970.2}
 
     # 求解参数
-    TIME_LIMIT = 300
-    REL_GAP = 0.05
+    TIME_LIMIT = 7200
+    REL_GAP = 0.01
 
     @staticmethod
     def _has_solution(model):
@@ -783,9 +783,9 @@ def run_q1_weighted():
     solver = WeightedSolverQ1()
     t0 = time_module.time()
     _, _, ref_metrics = solver.solve(
-        routes, demands_by_facility,
-        weights=WEIGHT_SCHEMES['equal'],
-        time_limit=120)
+            routes, demands_by_facility,
+            weights=WEIGHT_SCHEMES['equal'],
+            time_limit=solver.TIME_LIMIT)
     t1 = time_module.time()
     if ref_metrics is not None:
         # 更新归一化常数
@@ -931,7 +931,7 @@ def run_q2_weighted():
     _, _, _, _, ref_metrics = solver.solve(
         routes, precomputed, outbound_demand, inbound_demand, shuttle_demand,
         weights=WEIGHT_SCHEMES['equal'],
-        time_limit=200)
+        time_limit=solver.TIME_LIMIT)
 
     if ref_metrics is not None:
         norm = {

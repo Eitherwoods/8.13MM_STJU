@@ -62,9 +62,9 @@ MAX_NEW_ROUTES = 6000                # 新生成路径数量上限（防止第�
 
 def patch_solver_params():
     """通过修改类属性设置求解器参数（monkey-patching，不改动原文件）"""
-    # 单次 Dinkelbach 迭代，单档时间限制 90 秒
+    # 单次 Dinkelbach 迭代，单档时间限制 7200 秒（2小时）
     Q3DailySolver.DINKELBACH_MAX_ITERS = 1
-    Q3DailySolver.TIME_LIMITS = [90]
+    Q3DailySolver.TIME_LIMITS = [7200]
     # 加权单目标权重
     Q3DailySolver.USE_WEIGHTED = True
     Q3DailySolver.W_TIME = 1.0
@@ -396,10 +396,10 @@ def main():
 
     # 0. 配置求解器参数
     patch_solver_params()
-    # 演示模式：单目标快速求解，避免两阶段长时间搜索
+    # 演示模式：单目标求解，时限 7200 秒（2小时）
     Q3DailySolver.USE_TWO_STAGE = False
-    Q3DailySolver.TIME_LIMITS = [60]
-    Q3DailySolver.RETRY_TIME_LIMIT = 60
+    Q3DailySolver.TIME_LIMITS = [7200]
+    Q3DailySolver.RETRY_TIME_LIMIT = 7200
 
     # 1. 加载数据
     print("\n[1] 加载数据...")
