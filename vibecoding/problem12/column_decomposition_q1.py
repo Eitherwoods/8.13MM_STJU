@@ -900,8 +900,7 @@ class ColumnDecompositionSolverQ1:
         # 4) 乘子驱动列生成（多轮）
         lag_stats = []
         for rd in range(1, self.lagrangian_rounds + 1):
-            print(f"
-===== 乘子驱动列生成 第 {rd}/{self.lagrangian_rounds} 轮 =====")
+            print(f"\n===== 乘子驱动列生成 第 {rd}/{self.lagrangian_rounds} 轮 =====")
             fac_mult = self._facility_multiplier_from_columns(columns, demands_by_facility)
             n_pos = sum(1 for v in fac_mult.values() if v > 0)
             print(f"  计算 facility multiplier 完成: 正乘子设施数={n_pos}/{len(fac_mult)}")
@@ -981,8 +980,7 @@ class ColumnDecompositionSolverQ1:
             'cg_stats': self.cg_stats,
             'elapsed': elapsed,
         }
-        print(f"
-[6] 乘子驱动列生成实验完成，总耗时 {elapsed:.1f}s")
+        print(f"\n[6] 乘子驱动列生成实验完成，总耗时 {elapsed:.1f}s")
         return result
 
     @staticmethod
