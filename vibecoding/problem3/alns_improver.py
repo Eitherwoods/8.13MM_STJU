@@ -928,7 +928,8 @@ class AlnsImprover:
         self.repair_calls = {k: 0 for k in self.repair_ops}
 
     def run(self, iterations=300, q_min=2, q_max=8,
-            t0=5000.0, cooling=0.99, segment=30):
+            t0=5000.0, cooling=0.99, segment=30,
+            initial_solution=None):
         """
         ALNS 主循环。
 
@@ -938,14 +939,18 @@ class AlnsImprover:
             t0: 模拟退火初始温度
             cooling: 降温系数
             segment: 权重刷新周期（迭代数）
+            initial_solution: 可选初始解（AlnsSolution），提供时从该解出发
+                迭代改进（抛光模式）；None 时贪心构造初始解（热启动模式）。
         """
-        best = self.build_initial_solution()
+        best = (initial_solution.copy() if initial_solution is not None
+                else self.build_initial_solution())
         current = best.copy()
         best_obj = self.evaluate(best)
         current_obj = best_obj
         t = t0
 
-        print(f"  ALNS 初始解: 路径={len(best.selected)}, 目标={best_obj:.2f}")
+        print(f"  ALNS 初始解: 路径={len(best.selected)}, 目标={best_obj:.2f}, "
+              f"来源={'抛光' if initial_solution is not None else '贪心构造'}")
 
         for it in range(iterations):
             q = self.rng.randint(q_min, q_max)

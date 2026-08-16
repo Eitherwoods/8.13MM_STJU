@@ -253,8 +253,24 @@ class Q3RouteGenerator:
     - 14个偏移控制MIP规模，确保2h内可收敛
     """
 
-    def __init__(self, distances):
+    def __init__(self, distances, offsets=None,
+                 pair_cap=300, triple_cap=300, quad_cap=600, quint_cap=900):
+        """
+        参数:
+            distances: 距离矩阵
+            offsets: 可选起飞偏移列表（分钟），None 时使用模块级 DEPARTURE_OFFSETS。
+                传入自定义偏移列表可精简路径池（如按需求时间窗聚类后的关键时刻），
+                大幅压缩 MIP 规模。
+            pair_cap/triple_cap/quad_cap/quint_cap: 多设施路径数量上限。
+                默认 300/300/600/900（与原始行为一致）；传入更小值可进一步
+                压缩路径池规模（牺牲部分多停靠覆盖换取 MIP 可解性）。
+        """
         self.distances = distances
+        self.offsets = offsets if offsets is not None else DEPARTURE_OFFSETS
+        self.pair_cap = pair_cap
+        self.triple_cap = triple_cap
+        self.quad_cap = quad_cap
+        self.quint_cap = quint_cap
 
     def _compute_cluster_offsets(self, day_demands, day):
         """
@@ -326,7 +342,7 @@ class Q3RouteGenerator:
                     if s > 0:
                         savings.append((s, f1, f2))
             savings.sort(reverse=True)
-            for s, f1, f2 in savings[:300]:
+            for s, f1, f2 in savings[:self.pair_cap]:
                 best_order, _ = TSPSolver.best_order(airport, [f1, f2], self.distances)
                 for atype in AIRCRAFT_TYPES:
                     r = make_route(next_id(), airport, atype, best_order, self.distances)
@@ -341,7 +357,7 @@ class Q3RouteGenerator:
             best_pairs = [min(g, key=lambda r: r.time) for g in pair_groups.values()]
             count = 0
             for r2 in best_pairs:
-                if count >= 300:
+                if count >= self.triple_cap:
                     break
                 existing = list(r2.dest_facilities)
                 for f3 in fac_list:
@@ -364,7 +380,7 @@ class Q3RouteGenerator:
                     triple_groups[key].append(r)
             best_triples = [min(g, key=lambda r: r.time) for g in triple_groups.values()]
             for r3 in best_triples:
-                if count >= 600:
+                if count >= self.quad_cap:
                     break
                 existing = list(r3.dest_facilities)
                 for f4 in fac_list:
@@ -387,7 +403,7 @@ class Q3RouteGenerator:
                     quad_groups[key].append(r)
             best_quads = [min(g, key=lambda r: r.time) for g in quad_groups.values()]
             for r4 in best_quads:
-                if count >= 900:
+                if count >= self.quint_cap:
                     break
                 existing = list(r4.dest_facilities)
                 for f5 in fac_list:
@@ -453,7 +469,7 @@ class Q3RouteGenerator:
 
         # C7实验结论：聚类偏移替换固定偏移导致覆盖率下降，利用率反降
         # 保留原始固定偏移策略（C7方法保留供论文对比分析）
-        all_offsets = DEPARTURE_OFFSETS
+        all_offsets = self.offsets
 
         # 生成起飞时刻变体并检查兼容性
         routes_info = []
@@ -520,6 +536,15 @@ class Q3DailySolver:
             except Exception:
                 return False
         return False
+
+    def _apply_solver_tuning(self, model):
+        """
+        求解器参数调优钩子：在每次 COPT 模型求解前调用。
+
+        基类默认不额外调参（保持原有行为）；子类可覆盖此方法注入
+        MIPFocus / Cuts / Heuristics / Presolve 等针对大模型的参数。
+        """
+        pass
 
     def solve(self, routes_info, day_demands, day, distances, warm_start=None):
         """
@@ -1013,6 +1038,7 @@ class Q3DailySolver:
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
         model.setParam(cp.COPT.Param.RelGap, rel_gap if rel_gap is not None else 0.01)
         model.setParam(cp.COPT.Param.LogToConsole, self.LOG_TO_CONSOLE)
+        self._apply_solver_tuning(model)
 
         # --- 变量 ---
         x = {}
@@ -1818,6 +1844,159 @@ class Q3OutputWriter:
         print(f"  已分配: {len(person_to_flight)}/{len(all_demands)}")
 
 
+    @staticmethod
+    def write_daily_output(day, day_flights, day_demands, distances, output_dir):
+        """
+        逐日即时输出：每天MIP求解完立刻写入两个CSV。
+        
+        参数:
+            day: 当天日期
+            day_flights: 当天已分配飞机编号的架次列表
+            day_demands: 当天的非临时需求列表
+            distances: 距离矩阵
+            output_dir: 输出目录
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        date_str = day.strftime('%Y%m%d')
+        
+        # --- 写 q3-routes-{date}.csv ---
+        routes_path = os.path.join(output_dir, f'q3-routes-{date_str}.csv')
+        with open(routes_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['aircraft_id', 'flight_no', 'stop_order', 'facility_id',
+                             'arrival_time', 'departure_time', 'refuel'])
+            for flight in day_flights:
+                ri = flight['route_info']
+                r = ri['route']
+                schedule = ri['schedule']
+                path_list = r.path
+                ac_id = flight.get('aircraft_id') or 'UNASSIGNED'
+                fn = flight.get('flight_no') or 0
+                for i, loc in enumerate(path_list):
+                    arr, dep = schedule[i]
+                    refuel = 1 if i in r.refuel_at else 0
+                    arr_str = arr.strftime('%Y-%m-%d %H:%M') if arr else ''
+                    dep_str = dep.strftime('%Y-%m-%d %H:%M') if dep else ''
+                    writer.writerow([ac_id, fn, i, loc, arr_str, dep_str, refuel])
+        print(f"  写入 {routes_path} ({len(day_flights)} 架次)")
+        
+        # --- 写 q3-assignments-{date}.csv ---
+        assign_path = os.path.join(output_dir, f'q3-assignments-{date_str}.csv')
+        
+        # 构建人员→架次映射（从yo/yi/ys值分配具体人员）
+        person_to_flight = {}
+        
+        # 按OD类型分组当天需求
+        airport_set = set(AIRPORTS) | {'LAND'}
+        ob_by_fac = defaultdict(list)   # dest_fac -> [demand]
+        ib_by_fac = defaultdict(list)   # origin_fac -> [demand]
+        sh_by_od = defaultdict(list)    # (f1, f2) -> [demand]
+        
+        for d in day_demands:
+            o, de = d['origin_id'], d['destination_id']
+            if o in airport_set and de.startswith('F'):
+                ob_by_fac[de].append(d)
+            elif o.startswith('F') and de in airport_set:
+                ib_by_fac[o].append(d)
+            elif o.startswith('F') and de.startswith('F'):
+                sh_by_od[(o, de)].append(d)
+        
+        # 初始化每架次航段剩余容量
+        flight_seg_remain = []
+        for fi, flight in enumerate(day_flights):
+            r = flight['route_info']['route']
+            n_seg = max(0, len(r.path) - 1)
+            seg_remain = [r.capacity] * n_seg if n_seg > 0 else []
+            flight_seg_remain.append(seg_remain)
+        
+        def seg_has_space(fi, pidx, didx):
+            sr = flight_seg_remain[fi]
+            if not sr or pidx >= didx:
+                return False
+            for k in range(pidx, didx):
+                if k >= len(sr) or sr[k] <= 0:
+                    return False
+            return True
+        
+        def seg_consume(fi, pidx, didx):
+            sr = flight_seg_remain[fi]
+            for k in range(pidx, didx):
+                sr[k] -= 1
+        
+        # 遍历架次，按yo/yi/ys分配人员
+        for fi, flight in enumerate(day_flights):
+            ri = flight['route_info']
+            r = ri['route']
+            schedule = ri['schedule']
+            ac_id = flight.get('aircraft_id') or 'UNASSIGNED'
+            fn = flight.get('flight_no') or 0
+            
+            def try_assign(od_type, fac_key, count):
+                """尝试分配count个人到该架次的fac_key"""
+                nonlocal person_to_flight
+                if od_type == 'ob':
+                    demands = ob_by_fac.get(fac_key, [])
+                elif od_type == 'ib':
+                    demands = ib_by_fac.get(fac_key, [])
+                else:  # sh
+                    demands = sh_by_od.get(fac_key, [])
+                
+                added = 0
+                for d in demands:
+                    if d['person_id'] in person_to_flight:
+                        continue
+                    # 找pickup和delivery位置
+                    if od_type == 'ob':
+                        pidx = 0  # 从机场出发
+                        didx = r.path.index(fac_key) if fac_key in r.path else -1
+                    elif od_type == 'ib':
+                        pidx = r.path.index(fac_key) if fac_key in r.path else -1
+                        didx = len(r.path) - 1  # 到机场
+                    else:  # sh
+                        f1, f2 = fac_key
+                        pidx = r.path.index(f1) if f1 in r.path else -1
+                        didx = r.path.index(f2) if f2 in r.path else -1
+                    
+                    if pidx < 0 or didx < 0 or pidx >= didx:
+                        continue
+                    if not seg_has_space(fi, pidx, didx):
+                        continue
+                    
+                    person_to_flight[d['person_id']] = (ac_id, fn, pidx, didx)
+                    seg_consume(fi, pidx, didx)
+                    added += 1
+                    if added >= count:
+                        break
+                return added
+            
+            # OB
+            for (_, fac), cnt in flight.get('yo', {}).items():
+                try_assign('ob', fac, cnt)
+            # IB
+            for (_, fac), cnt in flight.get('yi', {}).items():
+                try_assign('ib', fac, cnt)
+            # SH
+            for (_, f1, f2), cnt in flight.get('ys', {}).items():
+                try_assign('sh', (f1, f2), cnt)
+        
+        # 写入
+        with open(assign_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['person_id', 'aircraft_id', 'flight_no',
+                             'pickup_stop_order', 'delivery_stop_order'])
+            for d in day_demands:
+                pid = d['person_id']
+                if pid in person_to_flight:
+                    ac, fn_p, pidx, didx = person_to_flight[pid]
+                    writer.writerow([pid, ac, fn_p, pidx, didx])
+                else:
+                    writer.writerow([pid, '', '', '', ''])
+        
+        assigned_count = len(person_to_flight)
+        total_count = len(day_demands)
+        print(f"  写入 {assign_path} ({assigned_count}/{total_count} 人已分配)")
+        return assigned_count
+
 # ==================== 主函数 ====================
 def main():
     """主函数：编排两阶段求解流程"""
@@ -1929,6 +2108,16 @@ def main():
         n_people = sum(sum(ri['yo'].values()) + sum(ri['yi'].values()) + sum(ri['ys'].values())
                        for ri in sel_routes)
         print(f"  架次: {n_flights}, 人数: {n_people}, 时间: {sum(ri['route'].time for ri in sel_routes)}min")
+
+        # ===== 逐日即时输出：分配飞机编号 + 写CSV =====
+        # 为当天架次分配飞机编号
+        day_routes_for_assign = [
+            {'route_info': ri, 'day': day, 'yo': ri['yo'], 'yi': ri['yi'], 'ys': ri['ys']}
+            for ri in sel_routes
+        ]
+        day_flights = Q3AircraftAssigner.assign(day_routes_for_assign)
+        # 写入当天CSV（仅非临时需求，临时任务在阶段二处理）
+        Q3OutputWriter.write_daily_output(day, day_flights, day_demands, distances, OUTPUT_DIR_Q3)
 
     # 3.1 失败日需求重分配：转移到其他已成功求解的日期
     # （更新需求的 _assigned_day，确保 write_assignments 能匹配到可用航班日）

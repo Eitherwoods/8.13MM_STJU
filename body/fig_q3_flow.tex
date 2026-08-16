@@ -1,5 +1,5 @@
 % -*- coding: utf-8 -*-
-% 问题三两阶段求解流程图
+% 问题三两阶段求解流程图（含逐日即时输出）
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[
@@ -12,6 +12,8 @@
         align=center, font=\footnotesize, fill=orange!12},
     box4/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=red!8},
+    box_out/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=0.7cm,
+        align=center, font=\footnotesize, fill=purple!10},
     arrow/.style={->, >=stealth, thick, draw=gray!70},
     darrow/.style={->, >=stealth, thick, draw=gray!70, dashed},
 ]
@@ -20,26 +22,29 @@
 \node[font=\small\bfseries, fill=green!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s1title) at (0, 2.8) {阶段一：固定排班（3840人）};
 
 % 第一行
-\node[box2] (decouple) at (-3.5, 1.8) {按天解耦定理\\$\to$ 7个单日};
+\node[box2] (decouple) at (-3.5, 1.8) {按天解耦定理\\状态逐日重置};
 \node[box2, right=0.6cm of decouple] (alloc) {需求-日期分配\\（跨天均衡）};
 \node[box2, right=0.6cm of alloc] (daily) {逐日 MIP 求解};
 
 % 第二行（每日内部）
 \node[box, below=0.4cm of daily] (cpm) {CPM 时间窗收缩\\剔除不可行路径};
 \node[box, left=0.6cm of cpm] (route) {受限路径池\\+ 时刻偏移};
-\node[box, left=0.6cm of route] (mip) {加权单目标 MIP\\+ Dinkelbach};
+\node[box, left=0.6cm of route] (mip) {两层 MIP\\(min T → 优化二级)};
+
+% 逐日即时输出
+\node[box_out, below=0.4cm of mip] (daily_out) {逐日即时输出\\分配飞机 + 写CSV};
 
 % 汇总
-\node[box2] (tstar) at (0, -0.6) {汇总 7 日 $\to T^*$};
+\node[box2] (tstar) at (0, -1.0) {汇总 7 日 $\to T^*$};
 
 % 阶段二标题
-\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s2title) at (0, -1.8) {阶段二：临时任务加入（160人）};
+\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s2title) at (0, -2.2) {阶段二：临时任务加入（160人）};
 
 % 第三行
-\node[box3] (knapsack) at (0, -2.8) {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
+\node[box3] (knapsack) at (0, -3.2) {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
 
 % 输出
-\node[box4] (output) at (0, -4.0) {输出 $q3$-routes.csv + $q3$-assignments.csv};
+\node[box4] (output) at (0, -4.4) {输出 $q3$-routes.csv + $q3$-assignments.csv};
 
 % 箭头
 \draw[arrow] (decouple) -- (alloc);
@@ -47,12 +52,16 @@
 \draw[arrow] (daily.south) -- (cpm.north);
 \draw[arrow] (cpm) -- (route);
 \draw[arrow] (route) -- (mip);
-\draw[arrow] (mip) |- (tstar);
+\draw[arrow] (mip) -- (daily_out);
+\draw[arrow] (daily_out) |- (tstar);
 \draw[arrow] (tstar) -- (s2title);
 \draw[arrow] (s2title) -- (knapsack);
 \draw[arrow] (knapsack) -- (output);
 
+% 逐日输出的说明箭头
+\draw[darrow] (daily_out.east) -- ++(1.5, 0) node[right, font=\scriptsize, text width=2.5cm] {每天求解完\\立即输出\\中间结果};
+
 \end{tikzpicture}
-\caption{问题三两阶段求解流程}
+\caption{问题三两阶段求解流程（含逐日即时输出机制）}
 \label{fig:q3_flow}
 \end{figure}

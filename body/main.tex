@@ -13,14 +13,14 @@
 \maketitle
 
 \begin{abstract}
-本文针对海上油田人员直升机运载计划编排问题，建立了基于\textbf{集合划分}的混合整数规划（MIP）模型，设计了\textbf{三阶段递进式求解框架}，并在各阶段辅以理论证明与最优性认证。
+本文针对海上油田人员直升机运载计划编排问题，建立了基于\textbf{集合划分}的混合整数规划（MIP）模型，设计了\textbf{三阶段递进式求解框架}，并在各阶段辅以理论证明与质量分析。
 
 对于\textbf{问题一}的单向出海运输，构建了\textbf{两阶段 $\varepsilon$-容差组合优化模型}，以 Clarke-Wright 节省算法生成候选路径，通过层次分析法（AHP）加权在容差带内系统优化在途时间、座位利用率和燃油消耗；理论上\textbf{证明了单向运输座位利用率不超过 50\% 的结构性上界}，为方案评估提供了基准。
 
 对于\textbf{问题二}的三类需求联合运输，引入\textbf{航段级容量约束}实现座位即时复用，理论证明\textbf{复用倍数上界为 $K+1$}；实测座位利用率达 88.18\%，\textbf{突破问题一的上界}。
 
-对于\textbf{问题三}的带时间要求多日排班，提出\textbf{按天解耦定理}将多日问题精确分解为 7 个独立单日问题，构建时间扩展网络统一表达时间窗与机队约束，并采用\textbf{两层严格时间优先框架}：第一层单目标严格最小化总飞机使用时间得到 $T^*$（无任何上界差），第二层在总时间不增加的硬约束下优化人员在途时间与燃油，随后以\textbf{临时任务背包化策略}实现 99.38\% 的临时任务满足率。在分析层面，通过\textbf{Pareto 前沿扫描}作为加权对比实验，以\textbf{拉格朗日松弛}给出最优性间隙的理论认证，并借助\textbf{$\varepsilon$-容差灵敏度分析}检验模型对参数扰动的稳健性。最终方案的总飞机使用时间分别为 15059、18169、35451 分钟，座位利用率分别为 48.67\%、88.18\%、35.81\%。
-\keywords{集合划分；两阶段优化；航段级容量约束；按天解耦；拉格朗日松弛；Pareto 最优性}
+对于\textbf{问题三}的带时间要求多日排班，提出\textbf{按天解耦定理}：固定需求-日期分配后，多日问题严格分解为 7 个独立单日问题；跨天需求经贪心均衡分配给出可行上界，并以损失界估计刻画日期分配层的质量。构建时间扩展网络统一表达时间窗与机队约束，并采用\textbf{两层严格时间优先框架}：第一层单目标严格最小化总飞机使用时间得到 $T^*$（无任何上界差），第二层在总时间不增加的硬约束下优化人员在途时间与燃油，随后以\textbf{临时任务背包化策略}实现 99.38\% 的临时任务满足率。在分析层面，通过\textbf{Pareto 前沿扫描}作为加权对比实验，并借助\textbf{$\varepsilon$-容差灵敏度分析}检验模型对参数扰动的稳健性。最终方案的总飞机使用时间分别为 15059、18169、35451 分钟，座位利用率分别为 48.67\%、88.18\%、35.81\%。
+\keywords{集合划分；两阶段优化；航段级容量约束；按天解耦；Pareto 最优性}
 \end{abstract}
 
 % ==================== 问题重述 ====================
@@ -77,7 +77,7 @@
 \label{fig:demand_dist}
 \end{figure}
 
-由此可见，问题三的核心矛盾是\textbf{时间窗碎片化与运力效率的冲突}。围绕这一矛盾，本文提炼出三个关键洞察：其一，由``飞机不得海上过夜、当日返场''可推出\textbf{按天解耦定理}（定理~\ref{thm:decouple}），将多日问题精确分解为 7 个独立单日问题；其二，时间窗只影响路径可行性判定，不改变问题二已建立的航段容量结构，模型可原样迁移；其三，临时任务时间窗极宽（均值 81 小时），适合\textbf{背包化}插入已有架次空余座位。
+由此可见，问题三的核心矛盾是\textbf{时间窗碎片化与运力效率的冲突}。围绕这一矛盾，本文提炼出三个关键洞察：其一，由``飞机不得海上过夜、当日返场''可推出\textbf{按天解耦定理}（定理~\ref{thm:decouple}）：架次不跨天、机队状态逐日重置，固定需求-日期分配后多日问题严格分解为 7 个独立单日问题；其二，时间窗只影响路径可行性判定，不改变问题二已建立的航段容量结构，模型可原样迁移；其三，临时任务时间窗极宽（均值 81 小时），适合\textbf{背包化}插入已有架次空余座位。
 
 % ==================== 问题假设 ====================
 \section{问题假设}
@@ -430,7 +430,7 @@ x_r \in \{0,1\},\ y^{O}_{r,f}, y^{I}_{r,f}, y^{S}_{r,(f_1,f_2)} \in \mathbb{Z}_{
 
 \subsubsection{问题分解与预处理}
 
-问题三的规模是问题二的 7 倍（7 天 $\times$ 4000 人 $\times$ 24 架飞机），直接求解不可行。但从题目约束中可提炼出关键洞察，实现严格等价的降维分解。
+问题三的规模是问题二的 7 倍（7 天 $\times$ 4000 人 $\times$ 24 架飞机），直接求解不可行。但从题目约束中可提炼出关键洞察，实现结构性降维分解：固定日期分配后各日独立，跨天需求由日期分配层统一处理。
 
 \begin{theorem}
 \label{thm:decouple}
@@ -443,9 +443,14 @@ x_r \in \{0,1\},\ y^{O}_{r,f}, y^{I}_{r,f}, y^{S}_{r,(f_1,f_2)} \in \mathbb{Z}_{
 
 \begin{corollary}
 \label{cor:indep}
-由于架次不跨天、飞机每日从所属机场重置出发，各日之间不存在状态转移耦合。多日排班问题可精确分解为 $D = 7$ 个独立的单日问题：
-$\min \sum_{d=1}^{7} Z_d$，其中 $Z_d$ 为第 $d$ 日最优目标值。
+给定需求-日期分配 $A = (A_1, \ldots, A_7)$（每条需求指派到唯一可行日），由于架次不跨天、飞机每日从所属机场重置出发，各日之间不存在状态转移耦合。多日排班问题可严格分解为 $D = 7$ 个独立的单日问题，总目标满足
+\[
+Z(A) = \sum_{d=1}^{7} Z_d(A_d),
+\]
+其中 $Z_d(A_d)$ 为仅含第 $d$ 日需求集合 $A_d$ 的单日问题最优值，可逐日独立精确求解。
 \end{corollary}
+
+\textbf{注}　跨天需求（本数据占 84.1\%）使日期分配 $A$ 本身成为全局耦合决策，全局最优值为 $\min_A Z(A)$。本文以贪心均衡构造可行分配 $A$，仅给出全局最优值的上界；日期分配层的质量由命题~\ref{prop:decay} 的损失界估计与失败日重分配机制兜底。
 
 \begin{corollary}
 \label{cor:dateset}
@@ -469,7 +474,16 @@ $\min \sum_{d=1}^{7} Z_d$，其中 $Z_d$ 为第 $d$ 日最优目标值。
 其中 $s_k$ 为停靠时间（加油 20 min / 普通 10 min），$v$ 为机型速度，边界条件 $\text{EAT}_0 = 06{:}00$，$\text{LDT}_{K+1} = 20{:}00$。若 $\exists\, k$ 使得 $\text{EAT}_k > \text{LDT}_k$，则路径 $r$ 不可行，直接剔除。此收缩为纯数学预处理，以 $O(K)$ 代价在路径生成阶段剔除时间窗不可行路径。
 \end{proposition}
 
-此外，按天解耦的贪心分配跨天需求存在可量化的损失上界：设跨天需求占比为 $\alpha$，单日 MIP 相对间隙为 $\delta$，单条跨天需求分配到非最优日期的额外成本上界为 $\Delta$，则 $\hat{T} \leq (1+\delta) T^* + \alpha |\mathcal{P}| \Delta$。本数据 $\alpha = 84.1\%$，MIP 间隙是主要瓶颈而非解耦损失。
+\begin{proposition}
+\label{prop:decay}
+记 $A$ 为贪心均衡得到的日期分配，$T^*(A) = \sum_{d} T^*_d(A_d)$ 为 $A$ 下逐日最优总时间，$T^{\star} = \min_A T^*(A)$ 为全局最优值，$\hat{T}$ 为逐日近似求解所得总时间。设跨天需求占比为 $\alpha$，单日 MIP 相对间隙为 $\delta$，且在``单条跨天需求日期偏差导致的成本增量可逐需求叠加''的假设下，单条跨天需求的最坏成本增量上界为 $\Delta$，则
+\[
+\hat{T} \leq (1+\delta)\, T^*(A), \qquad T^*(A) \leq T^{\star} + \alpha |\mathcal{P}| \Delta,
+\]
+从而 $\hat{T} \leq (1+\delta)\bigl(T^{\star} + \alpha |\mathcal{P}| \Delta\bigr)$。
+\end{proposition}
+
+需要说明的是，由于总飞机使用时间是架次级目标、路径由多人共享，$\Delta$ 无法严格逐需求分解，上式是启发式损失估计而非严格上界；整体最优性由逐日精确 MIP 上界、损失界估计与失败日重分配机制共同兜底，而非严格的间隙认证。本数据 $\alpha = 84.1\%$，跨天需求比例高、日期分配自由度大，贪心分配的损失主要表现为可行性与解质量风险，论文以失败日重分配机制进行兜底，而非将其视为可忽略的常数项。
 
 \subsubsection{时间扩展网络与统一建模}
 
@@ -559,7 +573,7 @@ MIP 最优性间隙 & 109\% & 61\% \\
 
 \input{fig_q3_flow}
 
-阶段一按天解耦为 7 个独立单日问题，通过需求-日期分配（跨天需求选负载最低的可行日期，贪心均衡）后逐日求解（CPM 收缩 $\to$ 受限路径池 $\to$ COPT MIP）。每个单日问题采用两层求解：第一层单目标严格最小化当日总飞机使用时间（时限 180 s，得到当日 $T^*_d$）；第二层固定第一层的路径选择，在 $T_d = T^*_d$（无上界差）下优化该日人员在途时间与燃油的加权目标。全部 7 日汇总得阶段一总时间 $T^* = \sum_d T^*_d$。
+阶段一先执行需求-日期分配（跨天需求选负载最低的可行日期，贪心均衡），确定每日需求集合后，按解耦定理（推论~\ref{cor:indep}）逐日独立求解（CPM 收缩 $\to$ 受限路径池 $\to$ COPT MIP）。每个单日问题采用两层求解：第一层单目标严格最小化当日总飞机使用时间（得到当日 $T^*_d$）；第二层固定第一层的路径选择，在 $T_d = T^*_d$（无上界差）下优化该日人员在途时间与燃油的加权目标。\textbf{逐日即时输出机制}：每天 MIP 求解完成后，立即为当天架次分配飞机编号（贪心区间调度），并写入 \texttt{q3-routes-\{YYYYMMDD\}.csv} 和 \texttt{q3-assignments-\{YYYYMMDD\}.csv} 两个中间结果文件。此机制保证即使后续天数求解失败，已成功天数的结果不会丢失，同时便于分阶段验证与调试。全部 7 日汇总得阶段一总时间 $T^* = \sum_d T^*_d$。
 
 阶段二采用临时任务背包化策略。阶段一固定排班确定后，剩余资源为``时间缝隙 + 空余座位''。将问题重构为最大覆盖/背包问题：
 \begin{equation}
@@ -578,6 +592,8 @@ MIP 最优性间隙 & 109\% & 61\% \\
 \textbf{(2) 时间窗保护。}问题三对每条需求计算 \texttt{check\_compatibility}：航班在登机停靠点的起飞时刻不早于需求最早可接人时刻、在下机停靠点的到达时刻不晚于需求最晚到达时刻，二者同时满足才允许分配。
 
 \textbf{(3) 日期保护。}需求-日期分配仅给出建议日期；写入阶段对未匹配需求执行二次匹配，逐条校验航班日期属于 \texttt{get\_feasible\_days} 返回的可行日期集合，禁止跨可行日期的搭错航班。当某日 MIP 无可行解时，\texttt{failed\_day\_demands} 机制将该日需求按可行日期与负载均衡重分配到已求解日，仍无法满足的如实标记为未服务。
+
+\textbf{(4) 逐日即时输出。}为避免多日求解过程中因终端中断或内存溢出导致全部结果丢失，引入逐日即时输出机制：每天 MIP 求解完成后，立即执行飞机编号分配（贪心区间调度算法）并写入当天的 \texttt{q3-routes-\{YYYYMMDD\}.csv} 和 \texttt{q3-assignments-\{YYYYMMDD\}.csv}。逐日输出的分配结果与最终汇总结果在飞机编号上可能略有差异（最终分配需考虑跨天的飞机周转），但人员-架次映射关系完全一致，保证中间结果的可用性。
 
 该兜底机制保证验证脚本（V1--V10）中容量、时间窗、日期、OD 一致性、方向顺序、重复分配与航油七类硬约束全部零违规，是结果可信性的最后防线。
 
@@ -617,53 +633,13 @@ $w_T$ & $w_{U}$ & 时间(min) & 利用率 & 架次 & Pareto \\
 \label{fig:q3_pareto}
 \end{figure}
 
-\subsubsection{拉格朗日下界认证}
-
-松弛机队约束（式~\eqref{eq:q3_fleet}），引入拉格朗日乘子 $\lambda_{a,t,\tau} \geq 0$\cite{geoffrion1974}，原问题下界为：
-\begin{equation}
-\text{LB}(\boldsymbol{\lambda}) = \min_{\mathbf{x}, \mathbf{y}} \left\{ Z(\mathbf{x}, \mathbf{y}) + \sum_{a,t,\tau} \lambda_{a,t,\tau} \!\left(\sum_{\substack{r \in \mathcal{R}^{a,t}_d \\ \tau \in [t^{dep}_r,\, t^{ret}_r+30]}} x_r - |\mathcal{M}_{a,t}|\right) \right\}
-\label{eq:lagrangian}
-\end{equation}
-
-对固定 $\boldsymbol{\lambda}$，子问题保持整数性（非 LP 松弛），用次梯度法\cite{held1974}更新乘子：$\lambda^{k+1}_{a,t,\tau} = \max(0,\, \lambda^k_{a,t,\tau} + \alpha_k g^k_{a,t,\tau})$，步长采用 Polyak 步长 $\alpha_k = \beta_k \cdot (\text{UB} - \text{LB}^{*}) / \|\mathbf{g}\|^2$。
-
-\begin{longtable}{lcc}
-\caption{三种下界对比（2026-08-03 单日）} \label{tab:lagrangian} \\
-\toprule
-方法 & 下界值 & 最优性间隙 \\
-\midrule
-\endfirsthead
-\toprule
-方法 & 下界值 & 最优性间隙 \\
-\midrule
-\endhead
-\bottomrule
-\endfoot
-\bottomrule
-\endlastfoot
-MIP 当前解 & 8065.95 & — \\
-COPT 内置下界 & 1588.94 & 80.30\% \\
-拉格朗日下界 & $-590.51$ & 107.32\% \\
-LP 松弛下界 & $-6167.28$ & 176.46\% \\
-\end{longtable}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.72\textwidth]{../figures/Problem3/q3_lagrangian_convergence.png}
-\caption{拉格朗日次梯度法收敛曲线}
-\label{fig:q3_lagrangian}
-\end{figure}
-
-由表~\ref{tab:lagrangian} 可得出三层递进的认证结论。其一，拉格朗日下界（$-590.51$）显著优于 LP 松弛下界（$-6167.28$），证明保持子问题整数性的松弛策略有效；其二，COPT 内置下界最紧（间隙 80.30\%），因其使用完整 MIP 求解器的割平面和分支策略；其三，\textbf{核心瓶颈在 MIP 求解器间隙（60--90\%），而非建模方法}——这解释了下文进阶方法改善有限的原因。
-
-
 \subsubsection{进阶方法探索}
 
-下界分析指出瓶颈在求解器间隙，本文从两个方向探索是否可以突破。
+逐日 MIP 的求解器间隙（60--90\%）表明瓶颈主要在求解器收敛而非建模，本文从三个方向探索是否可以突破。
 
 \textbf{方向一：时间窗感知需求聚类（负结果）。}将每日需求按时间窗中心聚类，取簇中心作为起飞时刻偏移。实验表明利用率从 49.68\% 降至 41.37\%（反降 8.3 个百分点）。根因在于需求时间窗均值 41.6 h（跨天），聚类中心无法有效替代均匀分布的固定偏移。此负结果验证了宽时间窗下均匀偏移策略的必要性。
 
-\textbf{方向二：反应式列生成\cite{barnhart1998}（边际改善）。}初始 MIP 求解后，识别低载客率设施（$<50\%$），为薄弱设施生成密集起飞时刻变体（每 30 min 一个），增强路径池后重新求解。人员在途时间下降 4.36\%，但利用率微降 0.85\%。改善有限的原因恰好印证了拉格朗日分析：MIP 间隙高达 80\%，求解器在 90 s 内无法充分利用更大的路径池。两个创新点共同指向``瓶颈在求解器而非建模''。
+\textbf{方向二：反应式列生成\cite{barnhart1998}（边际改善）。}初始 MIP 求解后，识别低载客率设施（$<50\%$），为薄弱设施生成密集起飞时刻变体（每 30 min 一个），增强路径池后重新求解。人员在途时间下降 4.36\%，但利用率微降 0.85\%。改善有限的原因恰好印证了求解器间隙分析：MIP 间隙高达 80\%，求解器在 90 s 内无法充分利用更大的路径池。两个方向共同指向``瓶颈在求解器而非建模''。
 
 \textbf{方向三：自适应渐进搜索（效果有限）。}受模拟退火思想启发，设计三轮渐进式搜索策略：第一轮粗搜（300 s / RelGap=20\%）快速定位可行解区域，第二轮精搜（600 s / RelGap=10\%）以首轮解为热启动收紧搜索，第三轮极精搜（900 s / RelGap=5\%）逼近最优。每轮均为两层结构（严格 $\min T$ + 二级指标优化），上一轮解通过 COPT MipStart 注入下一轮。单日实验显示该策略确能改善解质量（如 8 月 3 日 $T^*$ 从 5611 min 降至 4795 min，降幅 14.5\%）。但七日整体求解后，总飞机使用时间 $T^*=35483$ min，与原两层法（$T^*=35451$ min）仅差 0.09\%。原因在于：瓶颈并非单日解质量，而是 8 月 5 日与 8 月 9 日的组合不可行性——时间窗、航段容量与机队约束的交集为空，无论搜索多深都无法突破硬约束边界。此实验结论进一步验证了\textbf{约束可行性比搜索策略更关键}的判断。
 
@@ -782,7 +758,7 @@ LP 松弛下界 & $-6167.28$ & 176.46\% \\
 
 鲁棒优化与动态调度分别提供先验稳健性与后验适应性，结合形成``离线规划 + 在线修正''的闭环，验证了前述确定性解在不确定环境下的可靠性。
 
-问题三建立了带时间窗的多日排班模型，并通过按天解耦、Pareto 认证和拉格朗日下界完成了严格的理论分析。接下来，本文将对三个问题的求解结果进行统一的横向比较与检验。
+问题三建立了带时间窗的多日排班模型，并通过按天解耦、Pareto 对比和损失界分析完成了系统的理论分析与质量刻画。接下来，本文将对三个问题的求解结果进行统一的横向比较与检验。
 
 % ==================== 结果分析与检验 ====================
 \section{结果分析与检验}
@@ -849,7 +825,7 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \centering
 \caption{鲁棒优化结果（2026-08-03 单日）}
 \label{tab:robust_demand}
-\begin{tabular}{lcccc}
+\begin{tabular}{lccccc}
 \toprule
 方案 & 总时间(min) & 架次 & +0\% & +10\% & +19\% \\
 \midrule
@@ -864,7 +840,7 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 
 \subsection{最优性间隙与计算瓶颈}
 
-问题三的拉格朗日下界分析表明，最优性间隙为 80.30\%（COPT 内置下界）。这一间隙主要源于 MIP 求解器在 90 s 时限内的计算能力限制，而非模型缺陷。进阶方法探索（聚类、列生成）的实验结果进一步印证了这一判断：聚类因时间窗过宽而失效，列生成改善有限（在途 $-4.36\%$）恰因 MIP 间隙过高导致求解器无法充分利用更大的路径池。
+问题三在给定贪心日期分配下逐日求解，单日 MIP 在 90 s 时限内的最优性间隙为 80.30\%（COPT 内置下界）。这一间隙主要源于 MIP 求解器在 90 s 时限内的计算能力限制，而非模型缺陷；日期分配层的质量由命题~\ref{prop:decay} 的损失估计与失败日重分配机制另行兜底。进阶方法探索（聚类、列生成）的实验结果进一步印证了这一判断：聚类因时间窗过宽而失效，列生成改善有限（在途 $-4.36\%$）恰因 MIP 间隙过高导致求解器无法充分利用更大的路径池。
 
 
 % ==================== 模型评价与推广 ====================
@@ -875,8 +851,8 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \begin{itemize}
 \item \textbf{两阶段/两层框架通用}：问题一/二共用``先保时间、再在带内系统优化''的两阶段 $\varepsilon$-容差框架；问题三升级为``先严格最小化总时间、再在无上界差下优化二级指标''的两层框架，方法论统一且时间目标均保持主导地位。
 \item \textbf{座位复用突破理论上界}：从单向运输的 50\% 利用率上界到 $K+1$ 复用倍数上界，再到实测 88.18\%，理论分析与实验数据形成闭环。
-\item \textbf{按天解耦实现严格等价分解}：定理~\ref{thm:decouple} 保证多日问题精确分解为 7 个独立单日问题，非近似而是严格等价。
-\item \textbf{双重认证体系}：Pareto 权重对比实验（参数层面）+ 拉格朗日下界（理论层面），分别验证``时间优先的必要性''和``解的质量有界''。
+\item \textbf{按天解耦实现结构性分解}：定理~\ref{thm:decouple} 保证固定需求-日期分配后多日问题严格分解为 7 个独立单日问题；跨天需求经贪心均衡分配给出可行上界，配合损失界估计与失败日重分配机制形成``上层可行分配 + 下层精确求解 + 损失界兜底''的框架。
+\item \textbf{双重质量校验}：Pareto 权重对比实验（参数层面）+ 逐日 MIP 间隙与损失界分析（求解质量层面），分别验证``时间优先的必要性''和``求解结果的质量边界''。
 \item \textbf{鲁棒性背书}：$\pm$60 min 扰动下稳定率 100\%，鲁棒性来源于时间窗跨天的天然缓冲，验证了确定性解的可靠性。
 \end{itemize}
 
@@ -898,12 +874,10 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \bibitem{clarke1964} Clarke G, Wright J W. Scheduling of vehicles from a central depot to a number of delivery points[J]. Operations Research, 1964, 12(4): 568--581.
 \bibitem{saaty1980} Saaty T L. The Analytic Hierarchy Process[M]. New York: McGraw-Hill, 1980.
 \bibitem{dinkelbach1967} Dinkelbach W. On nonlinear fractional programming[J]. Management Science, 1967, 13(7): 492--498.
-\bibitem{geoffrion1974} Geoffrion A M. Lagrangean relaxation for integer programming[J]. Mathematical Programming Study, 1974, 2: 82--114.
 \bibitem{haimes1971} Haimes Y Y, Lasdon L S, Wismer D A. On a bicriterion formulation of the problems of integrated system identification and system optimization[J]. IEEE Transactions on Systems, Man, and Cybernetics, 1971, 1(3): 296--297.
 \bibitem{ford1962} Ford L R, Fulkerson D R. Flows in Networks[M]. Princeton: Princeton University Press, 1962.
 \bibitem{barnhart1998} Barnhart C, Johnson E L, Nemhauser G L, et al. Branch-and-price: Column generation for solving huge integer programs[J]. Operations Research, 1998, 46(3): 316--329.
 \bibitem{pareto1906} Pareto V. Manual of Political Economy[M]. New York: Augustus M. Kelley, 1906.
-\bibitem{held1974} Held M, Wolfe P, Crowder H P. Validation of subgradient optimization[J]. Mathematical Programming, 1974, 6(1): 62--88.
 \bibitem{hu2018} 胡运权. 运筹学教程[M]. 第5版. 北京: 清华大学出版社, 2018.
 \bibitem{si2017} 司守奎, 孙兆亮. 数学建模算法与应用[M]. 第2版. 北京: 国防工业出版社, 2017.
 \end{thebibliography}
@@ -918,7 +892,6 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \item 全局配置与公共模型：\texttt{config.py}、\texttt{base\_models.py}
 \item 问题一/二两阶段求解器：\texttt{two\_stage\_solver.py}
 \item 问题三核心求解器：\texttt{problem3\_solution.py}
-\item 拉格朗日下界计算：\texttt{lagrangian\_bound.py}
 \item Pareto 前沿分析：\texttt{pareto\_sweep.py}
 \end{itemize}
 
