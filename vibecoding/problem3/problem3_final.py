@@ -20,11 +20,11 @@
       与 q3-assignments-{date}.csv，防止终端中断导致结果丢失。
 
 运行（Powershell）:
-  E:\Python\python.exe problem3_final.py                 # 完整模式
-  E:\Python\python.exe problem3_final.py --fast          # 快速预览（单日缩短时限）
-  E:\Python\python.exe problem3_final.py --no-cg         # 关闭列生成增强
-  E:\Python\python.exe problem3_final.py --no-polish     # 关闭 ALNS 抛光
-  E:\Python\python.exe problem3_final.py --day 2026-08-03  # 只跑指定日期
+  python problem3_final.py                 # 完整模式
+  python problem3_final.py --fast          # 快速预览（单日缩短时限）
+  python problem3_final.py --no-cg         # 关闭列生成增强
+  python problem3_final.py --no-polish     # 关闭 ALNS 抛光
+  python problem3_final.py --day 2026-08-03  # 只跑指定日期
 """
 
 import os

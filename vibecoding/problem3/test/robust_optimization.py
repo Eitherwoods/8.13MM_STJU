@@ -25,7 +25,7 @@
     因此鲁棒解只需把 latest_arrival 替换为 lbar_p - Δ 再求解名义模型。
 
 运行方式:
-    E:\\Python\\python.exe robust_optimization.py
+    python robust_optimization.py
 """
 
 import os

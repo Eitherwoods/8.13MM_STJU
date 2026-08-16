@@ -16,7 +16,7 @@
   --mode lagrangian 基于机队约束乘子的 reduced cost 定价补列（不引入 HiGHS）
 
 运行:
-  E:\\Python\\python.exe column_generation.py
+  python column_generation.py
 """
 
 import os

@@ -12,7 +12,7 @@
   用于论文"ALNS 热启动 vs 无热启动"的消融分析。
 
 运行方式:
-    E:\\Python\\python.exe validate_alns_0803.py
+    python validate_alns_0803.py
 """
 
 import os

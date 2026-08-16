@@ -3,72 +3,55 @@
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[
-    node distance=0.5cm and 0.7cm,
-    box/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
+    box/.style={draw, rounded corners=3pt, minimum width=3.0cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=blue!8},
-    box2/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
+    boxg/.style={draw, rounded corners=3pt, minimum width=3.0cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=green!10},
-    box3/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
+    boxo/.style={draw, rounded corners=3pt, minimum width=3.0cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=orange!12},
-    box4/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
+    boxr/.style={draw, rounded corners=3pt, minimum width=3.0cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=red!8},
-    box_out/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
+    boxp/.style={draw, rounded corners=3pt, minimum width=3.0cm, minimum height=0.7cm,
         align=center, font=\footnotesize, fill=purple!10},
-    box_alns/.style={draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.7cm,
-        align=center, font=\footnotesize, fill=teal!10},
     arrow/.style={->, >=stealth, thick, draw=gray!70},
     darrow/.style={->, >=stealth, thick, draw=gray!70, dashed},
 ]
 
 % 阶段一标题
-\node[font=\small\bfseries, fill=green!15, draw, rounded corners, minimum width=9cm, minimum height=0.5cm] (s1title) at (0, 3.2) {阶段一：固定排班（3840人）};
+\node[font=\small\bfseries, fill=green!15, draw, rounded corners, minimum width=9.5cm, minimum height=0.5cm] (s1) at (0, 3.8) {阶段一：固定排班（3840人）};
 
-% 第一行
-\node[box2] (decouple) at (-4.2, 2.2) {按天解耦定理\\状态逐日重置};
-\node[box2, right=0.5cm of decouple] (alloc) {需求-日期分配\\（跨天均衡）};
-\node[box2, right=0.5cm of alloc] (daily) {逐日 MIP 求解};
+% 第一行：预处理（2 列）
+\node[boxg] (decouple) at (-1.8, 2.7) {按天解耦定理\\状态逐日重置};
+\node[boxg] (alloc) at (1.8, 2.7) {需求-日期分配\\（跨天均衡）};
 
-% 第二行（每日内部 - 路径生成）
-\node[box, below=0.4cm of daily] (cpm) {CPM 时间窗收缩\\剔除不可行路径};
-\node[box, left=0.5cm of cpm] (route) {智能路径池\\F1: 聚类偏移+剪枝};
-\node[box_alns, left=0.5cm of route] (alns_warm) {ALNS 热启动\\F2: MipStart注入};
-
-% 第三行（MIP + 列生成 + 抛光）
-\node[box, below=0.4cm of cpm] (mip) {两层 COPT MIP\\F4: 大模型调参};
-\node[box_alns, left=0.5cm of mip] (alns_polish) {ALNS 抛光\\F2: 解后改进};
-\node[box, right=0.5cm of mip] (cg) {动态列生成\\F3: 薄弱设施补列};
-
-% 逐日即时输出
-\node[box_out, below=0.4cm of mip] (daily_out) {逐日即时输出\\F5: 飞机编号+CSV};
+% 第二行：逐日求解（3 列）
+\node[box] (route) at (3.7, 1.5) {智能路径池\\F1 聚类偏移+剪枝};
+\node[box] (mip) at (0, 1.5) {两层 COPT MIP\\F2 ALNS热启动/抛光·F4 调参};
+\node[boxp] (daily_out) at (-3.7, 1.5) {逐日即时输出\\F5 飞机编号+CSV};
 
 % 汇总
-\node[box2, right=0.5cm of daily_out] (tstar) {汇总 7 日 $\to T^*$};
+\node[boxg] (tstar) at (0, 0.3) {汇总 7 日 $\to T^*$};
 
 % 阶段二标题
-\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=9cm, minimum height=0.5cm, below=0.4cm of tstar] (s2title) {阶段二：临时任务加入（160人）};
+\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=9.5cm, minimum height=0.5cm] (s2) at (0, -0.8) {阶段二：临时任务加入（160人）};
 
-% 第三行
-\node[box3, below=0.4cm of s2title] (knapsack) {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
+% 阶段二流程（2 列）
+\node[boxo, below=0.3cm of s2] (knapsack) {背包化：剩余座位+时间缝隙\\$\max\sum z_p$};
+\node[boxr, below=0.3cm of knapsack] (output) {输出 $q3$-routes.csv + $q3$-assignments.csv};
 
-% 输出
-\node[box4, below=0.4cm of knapsack] (output) {输出 $q3$-routes.csv + $q3$-assignments.csv};
-
-% 箭头
+% 主箭头
 \draw[arrow] (decouple) -- (alloc);
-\draw[arrow] (alloc) -- (daily);
-\draw[arrow] (daily.south) -- (cpm.north);
-\draw[arrow] (cpm) -- (route);
-\draw[arrow] (route) -- (alns_warm);
-\draw[arrow] (alns_warm) |- (mip);
-\draw[arrow] (cpm.south) -- (mip.north);
-\draw[arrow] (mip) -- (alns_polish);
-\draw[arrow] (mip) -- (cg);
-\draw[darrow] (cg.south) -- ++(0,-0.35) -| (route.south);
-\draw[arrow] (alns_polish) -- (daily_out);
-\draw[arrow] (daily_out) -- (tstar);
-\draw[arrow] (tstar) -- (s2title);
-\draw[arrow] (s2title) -- (knapsack);
+\draw[arrow] (alloc)  -| (route.north);
+\draw[arrow] (route) -- (mip);
+\draw[arrow] (mip) -- (daily_out);
+\draw[arrow] (daily_out) |- (tstar);
+\draw[arrow] (tstar) -- (s2);
+\draw[arrow] (s2) -- (knapsack);
 \draw[arrow] (knapsack) -- (output);
+
+% F3 动态列生成（虚线反馈：MIP 回到路径池）
+\draw[darrow] (mip.south) -- ++(0,-0.2) -| (route.south);
+\node[font=\scriptsize, align=center, anchor=north] at (2.5, 0.9) {F3 动态列生成\\（薄弱设施补列）};
 
 \end{tikzpicture}
 \caption{问题三两阶段求解流程（最终版 F1--F5 优化）}

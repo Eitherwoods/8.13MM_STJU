@@ -29,7 +29,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ==================== 模块路径 ====================
-_PROJECT_DIR = r"D:\数模\26策联杯\8.13MM_STJU"
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 项目根目录（动态定位，原为硬编码绝对路径）
 _VIBECODING_DIR = os.path.join(_PROJECT_DIR, 'vibecoding')
 _THIS_DIR = os.path.join(_VIBECODING_DIR, 'problem3')
 if _VIBECODING_DIR not in sys.path:

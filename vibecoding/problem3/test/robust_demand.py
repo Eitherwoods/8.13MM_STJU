@@ -16,7 +16,7 @@
   即选中路径对设施 f 的最大可服务人数是否 ≥ nbar_f × scale。
 
 运行方式:
-    E:\\Python\\python.exe robust_demand.py
+    python robust_demand.py
 """
 
 import os

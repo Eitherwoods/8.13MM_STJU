@@ -1,12 +1,12 @@
-﻿# 文件: run_all_rerun.ps1
+# 文件: run_all_rerun.ps1
 # 功能: 按计划文档顺序重跑 Q1/Q2/Q3 全部求解器与辅助分析，单步失败不终止
 # 用法: powershell -ExecutionPolicy Bypass -File run_all_rerun.ps1
 
 $ErrorActionPreference = 'Continue'
 $env:PYTHONIOENCODING = 'utf-8'
 
-$root = 'D:\数模\26策联杯\8.13MM_STJU'
-$py = 'E:\Python\python.exe'
+$root = Split-Path -Parent $PSScriptRoot
+$py = 'python'
 $logs = Join-Path $root 'logs'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null

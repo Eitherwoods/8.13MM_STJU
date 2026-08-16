@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 生成额外的分析图表
 包含: G1-G5 图表以及敏感性分析相关图表
@@ -19,7 +19,7 @@ rcParams['axes.unicode_minus'] = False
 rcParams['figure.dpi'] = 150
 
 # 路径配置
-BASE_DIR = Path(r"D:\数模\26策联杯\8.13MM_STJU")
+BASE_DIR = Path(__file__).resolve().parents[2]  # 项目根目录（动态定位，原为硬编码绝对路径）
 OUTPUT_DIR = BASE_DIR / "figures" / "Problem3" / "extra"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
