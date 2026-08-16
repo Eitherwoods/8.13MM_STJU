@@ -35,16 +35,16 @@
 \node[box_out, below=0.4cm of mip] (daily_out) {逐日即时输出\\分配飞机 + 写CSV};
 
 % 汇总
-\node[box2] (tstar) at (0, -1.0) {汇总 7 日 $\to T^*$};
+\node[box2, right=0.6cm of daily_out] (tstar) {汇总 7 日 $\to T^*$};
 
 % 阶段二标题
-\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm] (s2title) at (0, -2.2) {阶段二：临时任务加入（160人）};
+\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=8cm, minimum height=0.5cm, below=0.4cm of tstar] (s2title) {阶段二：临时任务加入（160人）};
 
 % 第三行
-\node[box3] (knapsack) at (0, -3.2) {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
+\node[box3, below=0.4cm of s2title] (knapsack)  {背包化：剩余座位 + 时间缝隙\\$\max\sum z_p$};
 
 % 输出
-\node[box4] (output) at (0, -4.4) {输出 $q3$-routes.csv + $q3$-assignments.csv};
+\node[box4, below=0.4cm of knapsack] (output) {输出 $q3$-routes.csv + $q3$-assignments.csv};
 
 % 箭头
 \draw[arrow] (decouple) -- (alloc);
@@ -53,13 +53,10 @@
 \draw[arrow] (cpm) -- (route);
 \draw[arrow] (route) -- (mip);
 \draw[arrow] (mip) -- (daily_out);
-\draw[arrow] (daily_out) |- (tstar);
+\draw[arrow] (daily_out) -- (tstar);
 \draw[arrow] (tstar) -- (s2title);
 \draw[arrow] (s2title) -- (knapsack);
 \draw[arrow] (knapsack) -- (output);
-
-% 逐日输出的说明箭头
-\draw[darrow] (daily_out.east) -- ++(1.5, 0) node[right, font=\scriptsize, text width=2.5cm] {每天求解完\\立即输出\\中间结果};
 
 \end{tikzpicture}
 \caption{问题三两阶段求解流程（含逐日即时输出机制）}
