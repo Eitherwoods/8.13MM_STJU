@@ -535,6 +535,24 @@ MIP 最优性间隙 & 109\% & 61\% \\
 \label{eq:q3_fleet}
 \end{equation}
 
+\textbf{燃油可行性约束}：加油中转点嵌入机制复用。
+
+\subsubsection{目标函数}
+
+问题三采用\textbf{两层严格时间优先}结构，保证总飞机使用时间不存在任何上界差。第一层单目标严格最小化总飞机使用时间：
+\begin{equation}
+\min \sum_r t_r x_r
+\label{eq:q3_obj}
+\end{equation}
+
+得到第一层最优时间 $T^*$ 后，第二层固定第一层选中的路径集合（$x_r$ 保持不变，总时间严格等于 $T^*$，无上界差），仅优化人员分配，最小化人员在途时间与燃油的加权组合：
+\begin{equation}
+\min \ w_\tau \sum_{p} \tau_p + w_f \sum_r f_r \, x_r \quad \text{s.t.} \quad \sum_r t_r x_r = T^*
+\label{eq:q3_obj2}
+\end{equation}
+
+其中 $w_\tau = 0.01$、$w_f = 0.005$。固定路径后模型规模大幅缩小，第二层可快速求解；同时在途时间与燃油为稀疏目标，避免了引入利用率项（$W = \sigma - \pi$）导致的目标矩阵 100\% 稠密、根节点 LP 无法收敛的问题。加权单目标形式（$w_1\sum_r t_r x_r + w_2\tau + w_3 W + w_4\sum_r f_r x_r$）保留作为 Pareto 权重对比实验（见~\ref{sec:q3_pareto}）。
+
 \subsubsection{两阶段求解策略}
 
 题目要求两阶段求解：阶段一在不考虑临时任务的情况下编排（3840 人），得到总飞机使用时间 $T^*$；阶段二在 $T \leq T^*$ 约束下插入临时任务（160 人）。求解流程如图~\ref{fig:q3_flow} 所示。
@@ -563,36 +581,9 @@ MIP 最优性间隙 & 109\% & 61\% \\
 
 该兜底机制保证验证脚本（V1--V10）中容量、时间窗、日期、OD 一致性、方向顺序、重复分配与航油七类硬约束全部零违规，是结果可信性的最后防线。
 
-\subsection{求解结果}
-
-问题三的求解结果如表~\ref{tab:q3_result} 所示。
-
-\begin{longtable}{lc}
-\caption{问题三求解结果} \label{tab:q3_result} \\
-\toprule
-指标 & 数值 \\
-\midrule
-\endfirsthead
-\toprule
-指标 & 数值 \\
-\midrule
-\endhead
-\bottomrule
-\endfoot
-\bottomrule
-\endlastfoot
-总飞机使用时间 & 35451 min（590.85 h） \\
-人员总在途时间 & 486738 min（8112.30 h） \\
-总架次数 & 207 \\
-总燃油消耗量 & 293456.7 kg \\
-座位利用率 & 35.81\% \\
-临时任务满足率 & 99.38\% \\
-\end{longtable}
-
-
 \subsection{分析比较}
 
-\subsubsection{Pareto 最优性分析}
+\subsubsection{Pareto 最优性分析}\label{sec:q3_pareto}
 
 为量化``时间与其他指标''之间的权衡，对 2026-08-03 单日以加权单目标形式扫描 7 组 $(w_T, w_{U})$ 权重组合（保留为对比实验，不作为主结果）。如表~\ref{tab:pareto} 所示，时间优先与极端时间优先两个方案位于\textbf{Pareto 前沿}\cite{pareto1906}（共 2 个前沿解）；偏离时间权重会以总时间上升为代价换取利用率改善，反之亦然。更重要的是，主结果两层框架在 08-03 得到 $T^* = 4791$ min，\textbf{严格优于所有 7 个加权方案的最短时间（5099 min）}，验证了``先严格保时间、再在无上界差下优化二级指标''的必要性。
 
@@ -683,7 +674,7 @@ LP 松弛下界 & $-6167.28$ & 176.46\% \\
 \label{fig:q3_c7c8}
 \end{figure}
 
-\subsection{实验结果}
+\subsection{求解结果}
 
 问题三的求解结果如表~\ref{tab:q3_result} 所示。
 
@@ -810,32 +801,54 @@ LP 松弛下界 & $-6167.28$ & 176.46\% \\
 \centering
 \begin{minipage}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{../figures/Problem3/q3_c7_c8_comparison.png}
-\caption{C7 聚类 vs C8 列生成对比}
-\label{fig:q3_c7c8}
+\includegraphics[width=\textwidth]{../figures/Problem1/q1_method_compare.png}
+\caption{问题一 11 种方案对比雷达图}
+\label{fig:q1_method}
 \end{minipage}\hfill
 \begin{minipage}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{../figures/Problem3/q3_q1q2q3_comparison.png}
-\caption{三题指标横向对比}
-\label{fig:q3_compare}
+\includegraphics[width=\textwidth]{../figures/Problem2/q2_method_compare.png}
+\caption{问题二 11 种方案对比雷达图}
+\label{fig:q2_method}
 \end{minipage}
 \end{figure}
 
-\subsubsection{鲁棒优化与动态调度}
+\subsection{$\varepsilon$-容差敏感性分析}
 
-\textbf{鲁棒优化：需求人数波动。}海上油田人员运输的实际需求人数往往与计划存在偏差。本文将设施级需求人数视为不确定参数，建立盒式不确定集：
+$\varepsilon$-容差参数控制了时间主导性与二级目标优化空间之间的权衡。如图~\ref{fig:q1_epsilon} 所示，$\varepsilon$ 从 0\% 增至 10\% 时，总时间增 7.3\%、在途时间降 10.4\%、利用率降 2.06 个百分点、燃油增 5.5\%。$\varepsilon = 5\%$ 为时间-二级目标权衡的最佳折中点，在途时间降 6.1\% 而时间仅退化 1.51\%。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{../figures/Problem3/extra/G9_epsilon_tolerance_sensitivity.png}
+\caption{$\varepsilon$-容差敏感性分析（7 组 $\varepsilon$ $\times$ 4 指标）}
+\label{fig:q1_epsilon}
+\end{figure}
+
+\subsection{权重灵敏度分析}
+
+对问题一/二的 8 组权重方案和问题三的 7 组 Pareto 扫描结果进行综合灵敏度分析。问题一/二中，本方法在时间目标上始终处于主导地位（时间退化率 0\% 与 1.11\%），并均位于 Pareto 前沿（不被任何方案支配），AHP 综合得分分别为 0.9818 与 0.9998。问题三中，加权对比扫描显示时间优先与极端时间优先两个方案位于 Pareto 前沿，且两层主结果在 08-03 的 $T^* = 4791$ min 严格优于所有加权方案，说明只有显式两层结构才能保证时间目标无上界差。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{../figures/Problem3/extra/G6_weight_sensitivity_heatmap.png}
+\caption{权重敏感性热力图（8 方案 $\times$ 5 指标）}
+\label{fig:weight_sensitivity}
+\end{figure}
+
+\subsection{鲁棒优化：需求人数波动}
+
+海上油田人员运输的实际需求人数往往与计划存在偏差。本文将设施级需求人数视为不确定参数，建立盒式不确定集：
 \begin{equation}
 n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \end{equation}
 其中 $n^0_f$ 为名义需求人数，$\sigma$ 为需求波动比例（本文取 $\sigma \in \{0,\ 10\%,\ 19\%\}$）。
 
-在固定路径集合的结构下，鲁棒可行性等价于``按放大后人数求解名义模型''。对 2026-08-03 单日问题，分别求解名义解 $S_0$ 与鲁棒解 $S_{10\%}$、$S_{19\%}$，结果如表~\ref{tab:robust} 所示。
+在固定路径集合的结构下，鲁棒可行性等价于``按放大后人数求解名义模型''。对 2026-08-03 单日问题，分别求解名义解 $S_0$ 与鲁棒解 $S_{10\%}$、$S_{19\%}$，结果如表~\ref{tab:robust_demand} 所示。
 
 \begin{table}[htbp]
 \centering
 \caption{鲁棒优化结果（2026-08-03 单日）}
-\label{tab:robust}
+\label{tab:robust_demand}
 \begin{tabular}{lcccc}
 \toprule
 方案 & 总时间(min) & 架次 & +0\% & +10\% & +19\% \\
@@ -847,13 +860,9 @@ n_f \in \left[n^0_f,\ n^0_f(1+\sigma)\right]
 \end{tabular}
 \end{table}
 
-结果清晰地展示了鲁棒性-成本权衡：名义解在需求波动 10\% 时覆盖可行性降至 82.5\%；而鲁棒解通过预留容量缓冲，在对应波动幅度内保持 100\% 可行性，代价是总时间增加约 11\%（6338→7034 min）。
+结果清晰地展示了鲁棒性-成本权衡：名义解在需求波动 10\% 时覆盖可行性降至 82.5\%；而鲁棒解通过预留容量缓冲，在对应波动幅度内保持 100\% 可行性，代价是总时间增加约 11\%（6338$\to$7034 min）。
 
-\textbf{动态调度：滚动重优化。}将鲁棒优化嵌入滚动重优化框架：计划期首日求解鲁棒解 $S_\sigma$，执行期每日根据实际需求微调后续排班。实验表明：每日扰动 5\% 需求、最晚到达提前 18--36 h 时，滚动重优化以仅 2.5\% 的需求改期成本化解 13.6\% 的静态不可行风险，最终分配稳定率 97.5\%。
-
-鲁棒优化与动态调度分别提供先验稳健性与后验适应性，结合形成``离线规划 + 在线修正''的闭环，验证了前述确定性解在不确定环境下的可靠性。
-
-\subsubsection{最优性间隙与计算瓶颈}
+\subsection{最优性间隙与计算瓶颈}
 
 问题三的拉格朗日下界分析表明，最优性间隙为 80.30\%（COPT 内置下界）。这一间隙主要源于 MIP 求解器在 90 s 时限内的计算能力限制，而非模型缺陷。进阶方法探索（聚类、列生成）的实验结果进一步印证了这一判断：聚类因时间窗过宽而失效，列生成改善有限（在途 $-4.36\%$）恰因 MIP 间隙过高导致求解器无法充分利用更大的路径池。
 
