@@ -135,7 +135,7 @@ def main():
         print("  实验 A 求解失败!")
         metrics_a = None
     else:
-        sel_routes, yo, yi, ys = result_a
+        sel_routes, yo, yi, ys, _ = result_a
         metrics_a = extract_metrics(sel_routes, yo, yi, ys, routes_info)
         print(f"  A: 时间={metrics_a[0]}min, 利用率={metrics_a[1]*100:.2f}%, "
               f"架次={metrics_a[2]}, 燃油={metrics_a[3]:.1f}kg, 耗时={time_a:.1f}s")
@@ -152,7 +152,7 @@ def main():
         print("  实验 B 求解失败!")
         metrics_b = None
     else:
-        sel_routes, yo, yi, ys = result_b
+        sel_routes, yo, yi, ys, _ = result_b
         metrics_b = extract_metrics(sel_routes, yo, yi, ys, routes_info)
         print(f"  B: 时间={metrics_b[0]}min, 利用率={metrics_b[1]*100:.2f}%, "
               f"架次={metrics_b[2]}, 燃油={metrics_b[3]:.1f}kg, 耗时={time_b:.1f}s")

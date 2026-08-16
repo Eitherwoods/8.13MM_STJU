@@ -95,6 +95,9 @@ class AlnsImprover:
         # 路径能力索引：每条路径能服务的出海/海返设施与穿梭 OD
         self._build_route_capability()
 
+        # 设施多停靠索引（同一设施在路径中可能多次停靠，A1 防御性修复）
+        self._build_fac_pos()
+
         # 机队分组（与 MIP 约束4 一致）
         self._build_fleet_groups()
 
@@ -186,6 +189,59 @@ class AlnsImprover:
         for od, idxs in self.routes_by_sh.items():
             idxs.sort(key=lambda i: self._route_marginal_cost(i))
 
+    def _build_fac_pos(self):
+        """建立每条路径的设施多停靠索引：fac_pos[idx][fac] = [pos1, pos2, ...]"""
+        self.fac_pos = {}
+        for idx, ri in enumerate(self.routes_info):
+            pos_map = defaultdict(list)
+            for i, loc in enumerate(ri['route'].path):
+                if loc.startswith('F'):
+                    pos_map[loc].append(i)
+            self.fac_pos[idx] = {k: v for k, v in pos_map.items()}
+
+    def _pos_for(self, idx, f, kind):
+        """
+        返回设施 f 在路径 idx 上的停靠位置索引。
+
+        参数:
+            idx: 路径索引
+            f: 设施编号
+            kind: 'ob'（出海）或 'ib'（海返）
+
+        返回:
+            int 或 None（该路径不停靠设施 f）
+        """
+        poses = self.fac_pos.get(idx, {}).get(f, [])
+        if not poses:
+            return None
+        if kind == 'ob':
+            # 出海人员选择最早停靠点下机，占用航段最少
+            return poses[0]
+        if kind == 'ib':
+            # 海返人员选择最晚停靠点上机，占用航段最少
+            return poses[-1]
+        return None
+
+    def _sh_pair(self, idx, f1, f2):
+        """
+        返回设施对 (f1 -> f2) 在路径 idx 上的最优停靠对。
+
+        必须满足 p_idx < d_idx（方向顺序），并在所有满足条件的
+        停靠组合中优先取跨度 d_idx - p_idx 最小的一组。
+
+        返回:
+            (p_idx, d_idx) 或 None（无合法方向组合）
+        """
+        poses1 = self.fac_pos.get(idx, {}).get(f1, [])
+        poses2 = self.fac_pos.get(idx, {}).get(f2, [])
+        best = None
+        for p in poses1:
+            for d in poses2:
+                if p < d:
+                    if best is None or (d - p) < (best[1] - best[0]):
+                        best = (p, d)
+        return best
+
     def _build_fleet_groups(self):
         """建立机场-机型分组与时间槽占用（与 MIP 约束4 一致）"""
         from problem3_solution import FLEET
@@ -204,7 +260,13 @@ class AlnsImprover:
                 self.slot_to_routes[(key[0], key[1], slot)].add(idx)
 
     def _can_add_route(self, idx, selected):
-        """检查路径 idx 加入 selected 后是否违反机队约束"""
+        """
+        检查路径 idx 加入 selected 后是否违反机队约束。
+
+        注意：这里统计的是 (airport, atype, time_slot) 上的并发架次数，
+        属于「并发槽位/机队数量限制」，不是「航段座位容量限制」。
+        航段座位容量由 _assign_greedy / _segment_loads 统一处理。
+        """
         r = self.routes_info[idx]['route']
         max_count = self.fleet_max[r.airport][r.aircraft_type]
         for slot in self.routes_info[idx]['time_slots']:
@@ -221,7 +283,7 @@ class AlnsImprover:
         return sum(1 for other in occupied if other in selected)
 
     def _rebuild_slot_count(self, selected):
-        """重建时间槽占用计数 {(airport, atype, slot): 已选中路径数}"""
+        """重建时间槽占用计数 {(airport, atype, slot): 已选中路径数}（仅机队并发槽位）"""
         slot_count = defaultdict(int)
         for idx in selected:
             r = self.routes_info[idx]['route']
@@ -230,7 +292,13 @@ class AlnsImprover:
         return slot_count
 
     def _can_add_route_fast(self, idx, slot_count):
-        """快速机队检查：O(路径时间槽数)，基于增量维护的槽位计数"""
+        """
+        快速机队检查：O(路径时间槽数)，基于增量维护的槽位计数。
+
+        与 _can_add_route 一致，本函数仅做「并发槽位（机队数量）」限制，
+        不代表航段级座位容量；路径被移除后重新接受阶段使用，不直接写入
+        分配 CSV，因此不会被误当作容量硬约束。
+        """
         r = self.routes_info[idx]['route']
         max_count = self.fleet_max[r.airport][r.aircraft_type]
         for slot in self.routes_info[idx]['time_slots']:
@@ -240,7 +308,7 @@ class AlnsImprover:
 
     @staticmethod
     def _add_slot_count(idx, routes_info, slot_count):
-        """把路径 idx 加入槽位计数"""
+        """把路径 idx 加入槽位计数（仅机队并发槽位）"""
         r = routes_info[idx]['route']
         for slot in routes_info[idx]['time_slots']:
             slot_count[(r.airport, r.aircraft_type, slot)] += 1
@@ -307,24 +375,30 @@ class AlnsImprover:
             for (ri, f), v in solution.yo.items():
                 if ri != idx:
                     continue
-                pos = pre['facility_pos'][f]
+                pos = self._pos_for(ri, f, 'ob')
+                if pos is None:
+                    continue
                 # 出海：航段 0..pos-1 在机
                 for k in range(pos):
                     seg_load[k] += v
             for (ri, f), v in solution.yi.items():
                 if ri != idx:
                     continue
-                pos = pre['facility_pos'][f]
+                pos = self._pos_for(ri, f, 'ib')
+                if pos is None:
+                    continue
                 # 海返：航段 pos..n_seg-1 在机
                 for k in range(pos, n_seg):
                     seg_load[k] += v
             for (ri, f1, f2), v in solution.ys.items():
                 if ri != idx:
                     continue
-                pos1 = pre['facility_pos'][f1]
-                pos2 = pre['facility_pos'][f2]
-                # 穿梭：航段 pos1..pos2-1 在机
-                for k in range(pos1, pos2):
+                pair = self._sh_pair(ri, f1, f2)
+                if pair is None:
+                    continue
+                p_idx, d_idx = pair
+                # 穿梭：航段 p_idx..d_idx-1 在机
+                for k in range(p_idx, d_idx):
                     seg_load[k] += v
             loads[idx] = seg_load
         return loads
@@ -446,6 +520,13 @@ class AlnsImprover:
         """
         给定选中路径集合，贪心把设施级需求分配到路径，满足航段容量。
 
+        与 Q3DailySolver.solve 的返回格式完全对齐（A3）：
+            - yo: {(ri_idx, facility): count}
+            - yi: {(ri_idx, facility): count}
+            - ys: {(ri_idx, f1, f2): count}
+        OB/IB/SH 共享同一航段剩余容量池（loads），穿梭需满足
+        p_idx < d_idx 的方向顺序（A1），所有类型分配后不超任意航段容量。
+
         返回:
             (yo, yi, ys): 分配结果字典
         """
@@ -527,17 +608,17 @@ class AlnsImprover:
             for idx in self.routes_by_sh.get(od, []):
                 if idx not in solution.selected:
                     continue
-                pre = self.routes_info[idx]['precomputed']
-                pos1 = pre['facility_pos'][f1]
-                pos2 = pre['facility_pos'][f2]
-                if pos1 >= pos2:
+                pair = self._sh_pair(idx, f1, f2)
+                if pair is None:
+                    # 该路径上 f1 不在 f2 之前（方向不合法），跳过
                     continue
-                # 穿梭占用航段 pos1..pos2-1，取最小剩余容量
+                p_idx, d_idx = pair
+                # 穿梭占用航段 p_idx..d_idx-1，取最小剩余容量
                 cap = self.routes_info[idx]['route'].capacity
-                free = min(cap - loads[idx][k] for k in range(pos1, pos2))
+                free = min(cap - loads[idx][k] for k in range(p_idx, d_idx))
                 n_take = min(remaining, free)
                 if n_take > 0:
-                    for k in range(pos1, pos2):
+                    for k in range(p_idx, d_idx):
                         loads[idx][k] += n_take
                     ys[(idx, f1, f2)] = ys.get((idx, f1, f2), 0) + n_take
                     remaining -= n_take
@@ -550,7 +631,9 @@ class AlnsImprover:
         """计算路径 idx 对指定设施/类型需求的剩余容量"""
         pre = self.routes_info[idx]['precomputed']
         cap = self.routes_info[idx]['route'].capacity
-        pos = pre['facility_pos'][f]
+        pos = self._pos_for(idx, f, kind)
+        if pos is None:
+            return 0
         if kind == 'ob':
             segs = range(pos)
         elif kind == 'ib':
@@ -562,7 +645,9 @@ class AlnsImprover:
     def _apply_load(self, idx, f, kind, n, loads):
         """在 loads 上累加指定需求的在机人数"""
         pre = self.routes_info[idx]['precomputed']
-        pos = pre['facility_pos'][f]
+        pos = self._pos_for(idx, f, kind)
+        if pos is None:
+            return
         if kind == 'ob':
             segs = range(pos)
         else:  # ib

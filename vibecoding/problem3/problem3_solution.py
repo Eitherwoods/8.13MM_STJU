@@ -421,8 +421,11 @@ class Q3DailySolver:
     DINKELBACH_TOL = 0.005
     LAMBDA_INIT = 0.45
     TIME_LIMITS = [120, 150]
+    TWO_STAGE_TIME_LIMITS = [900, 60]  # 两层模式：第一层严格min T（大幅扩展）/ 第二层固定路径优化二级指标
     RETRY_TIME_LIMIT = 300  # 失败后重试的时间限制
+    USE_TWO_STAGE = True  # True=严格时间优先两层求解；False=加权单目标（对比实验用）
     USE_WEIGHTED = True  # True=加权单目标, False=字典序多目标
+    LOG_TO_CONSOLE = 0  # COPT 日志开关（调试 MipStart 时可临时置 1）
     # 加权目标权重（基于历史运行数据标定）
     W_TIME = 1.0       # 总时间权重（~10000量级）
     W_TRANSIT = 0.01   # 在途时间权重（~35000量级）
@@ -473,6 +476,19 @@ class Q3DailySolver:
             if 'precomputed' not in ri:
                 ri['precomputed'] = Q2RoutePreprocessor.preprocess(ri['route'], distances)
 
+        # 自适应渐进搜索（创新点C10）：三轮迭代，每轮用上一轮解热启动
+        if self.USE_ADAPTIVE:
+            return self._solve_adaptive(routes_info, day, distances,
+                                        ob_by_fac, ib_by_fac, sh_by_od,
+                                        warm_start=warm_start)
+
+        # 两层模式（默认）：第一层严格最小化总飞机使用时间，第二层在
+        # sum(t_r x_r) <= T* 硬约束（无上界差）下优化二级指标
+        if self.USE_TWO_STAGE:
+            return self._solve_two_stage(routes_info, day, distances,
+                                         ob_by_fac, ib_by_fac, sh_by_od,
+                                         warm_start=warm_start)
+
         lam = self.LAMBDA_INIT
         best_result = None
         best_util = -1.0
@@ -505,11 +521,210 @@ class Q3DailySolver:
             if result is None:
                 return None
             sel_routes, yo_vals, yi_vals, ys_vals = result
+            t_star = sum(ri['route'].time for ri in sel_routes)
             print(f"\n选中路径(重试): {len(sel_routes)}")
-            return sel_routes, yo_vals, yi_vals, ys_vals
+            return sel_routes, yo_vals, yi_vals, ys_vals, t_star
         sel_routes, yo_vals, yi_vals, ys_vals, _, _ = best_result
+        t_star = sum(ri['route'].time for ri in sel_routes)
         print(f"\n选中路径: {len(sel_routes)}")
-        return sel_routes, yo_vals, yi_vals, ys_vals
+        return sel_routes, yo_vals, yi_vals, ys_vals, t_star
+
+    def _solve_two_stage(self, routes_info, day, distances,
+                         ob_by_fac, ib_by_fac, sh_by_od, warm_start=None):
+        """
+        两层求解（严格时间优先）。
+
+        第一层：单目标严格最小化总飞机使用时间，得到 T*；
+        第二层：在硬约束 sum(t_r * x_r) <= T*（无任何上界差/容差放松）下，
+                优化在途时间、座位利用率与燃油的加权二级目标。
+
+        返回:
+            (sel_routes, yo_vals, yi_vals, ys_vals, t_star)
+        """
+        print("\n===== 两层求解（严格时间优先，无上界差） =====")
+
+        # ---------- 第一层：严格 min T ----------
+        t0 = time_module.time()
+        result1 = self._solve_with_lambda(routes_info, day, distances,
+                                          ob_by_fac, ib_by_fac, sh_by_od,
+                                          self.LAMBDA_INIT,
+                                          self.TWO_STAGE_TIME_LIMITS[0],
+                                          warm_start=warm_start,
+                                          objective='time')
+        if result1 is None:
+            print("  第一层（min T）无可行解，进入单目标重试...")
+            result = self._solve_fallback(routes_info, day, distances,
+                                          ob_by_fac, ib_by_fac, sh_by_od)
+            if result is None:
+                return None
+            sel_routes, yo_vals, yi_vals, ys_vals = result
+            t_star = sum(ri['route'].time for ri in sel_routes)
+            return sel_routes, yo_vals, yi_vals, ys_vals, t_star
+
+        sel1, yo1, yi1, ys1, _, _ = result1
+        t_star = sum(ri['route'].time for ri in sel1)
+        print(f"  第一层完成: T*={t_star} min, 架次={len(sel1)}, "
+              f"耗时={time_module.time()-t0:.1f}s")
+
+        # ---------- 第二层：T <= T* 下优化二级指标 ----------
+        t1 = time_module.time()
+        # 第一层选中路径索引全集（含"x=1 但 y=0"的个人级覆盖路径）
+        idx_of = {id(ri): i for i, ri in enumerate(routes_info)}
+        sel_idx = {idx_of[id(ri)] for ri in sel1}
+        # 注入第一层解作为热启动：保证第二层立即可行，再在 T<=T* 内优化二级目标
+        ws_second = {
+            'selected': sel_idx,
+            'yo': yo1,
+            'yi': yi1,
+            'ys': ys1,
+        }
+        result2 = self._solve_with_lambda(routes_info, day, distances,
+                                          ob_by_fac, ib_by_fac, sh_by_od,
+                                          self.LAMBDA_INIT,
+                                          self.TWO_STAGE_TIME_LIMITS[1],
+                                          warm_start=ws_second,
+                                          objective='second',
+                                          time_cap=t_star,
+                                          mipstart_mode=1,
+                                          fixed_selected=sel_idx)
+        if result2 is None:
+            print("  第二层无可行解，返回第一层解")
+            return sel1, yo1, yi1, ys1, t_star
+
+        sel2, yo2, yi2, ys2, _, _ = result2
+        t2_val = sum(ri['route'].time for ri in sel2)
+        assert t2_val <= t_star, f"第二层违反时间硬约束: {t2_val} > {t_star}"
+        print(f"  第二层完成: T={t2_val} min (≤ T*={t_star}), 架次={len(sel2)}, "
+              f"耗时={time_module.time()-t1:.1f}s")
+        return sel2, yo2, yi2, ys2, t_star
+
+    # ==================== 自适应渐进搜索配置（创新点C10） ====================
+    ADAPTIVE_ROUNDS = [
+        (300, 0.20, '粗搜'),    # 充足时间找可行解
+        (600, 0.10, '精搜'),    # 中等时间收紧搜索
+        (900, 0.05, '极精搜'),  # 长时间逼近最优
+    ]
+    USE_ADAPTIVE = True  # True=自适应三轮搜索；False=原两层搜索
+
+    def _solve_adaptive(self, routes_info, day, distances,
+                        ob_by_fac, ib_by_fac, sh_by_od, warm_start=None):
+        """
+        自适应渐进搜索（创新点C10）：三轮迭代，每轮用上一轮的解做热启动。
+
+        策略：粗搜(60s/30%) → 精搜(180s/15%) → 极精搜(600s/5%)
+        每轮都是两层结构：第一层严格min T，第二层T<=T*下优化二级指标。
+        上一轮的解作为下一轮的MipStart，让求解器从已有可行解出发继续优化。
+
+        返回:
+            (sel_routes, yo_vals, yi_vals, ys_vals, t_star) 或 None
+        """
+        print("\n===== 自适应渐进搜索（三轮迭代） =====")
+
+        best_result = None
+        best_t_star = float('inf')
+        prev_warm = warm_start  # 初始热启动（可能为None）
+
+        for round_idx, (time_limit, rel_gap, round_name) in enumerate(self.ADAPTIVE_ROUNDS):
+            print(f"\n{'='*50}")
+            print(f"  第{round_idx+1}轮 [{round_name}]: TL={time_limit}s, RelGap={rel_gap:.0%}")
+            print(f"{'='*50}")
+
+            t0 = time_module.time()
+
+            # 第一层：严格 min T（使用当前轮的时限和间隙）
+            result1 = self._solve_with_lambda(routes_info, day, distances,
+                                              ob_by_fac, ib_by_fac, sh_by_od,
+                                              self.LAMBDA_INIT,
+                                              time_limit,
+                                              warm_start=prev_warm,
+                                              objective='time',
+                                              rel_gap=rel_gap)
+            t_stage1 = time_module.time() - t0
+
+            if result1 is None:
+                print(f"  [{round_name}] 第一层无可行解")
+                # 如果是第一轮就失败，尝试fallback
+                if round_idx == 0:
+                    result = self._solve_fallback(routes_info, day, distances,
+                                                  ob_by_fac, ib_by_fac, sh_by_od)
+                    if result is not None:
+                        sel, yo, yi, ys = result
+                        t_star = sum(ri['route'].time for ri in sel)
+                        best_result = (sel, yo, yi, ys)
+                        best_t_star = t_star
+                        prev_warm = {
+                            'selected': {id(ri) for ri in sel},
+                            'yo': yo, 'yi': yi, 'ys': ys
+                        }
+                continue
+
+            sel1, yo1, yi1, ys1, _, _ = result1
+            t_star = sum(ri['route'].time for ri in sel1)
+            print(f"  [{round_name}] 第一层完成: T*={t_star}min, 架次={len(sel1)}, "
+                  f"耗时={t_stage1:.1f}s")
+
+            # 第二层：T <= T* 下优化二级指标
+            t1 = time_module.time()
+            idx_of = {id(ri): i for i, ri in enumerate(routes_info)}
+            sel_idx = {idx_of[id(ri)] for ri in sel1}
+            ws_second = {'selected': sel_idx, 'yo': yo1, 'yi': yi1, 'ys': ys1}
+
+            result2 = self._solve_with_lambda(routes_info, day, distances,
+                                              ob_by_fac, ib_by_fac, sh_by_od,
+                                              self.LAMBDA_INIT,
+                                              max(30, time_limit // 3),  # 第二层给1/3时限
+                                              warm_start=ws_second,
+                                              objective='second',
+                                              time_cap=t_star,
+                                              mipstart_mode=1,
+                                              fixed_selected=sel_idx,
+                                              rel_gap=rel_gap)
+            t_stage2 = time_module.time() - t1
+
+            if result2 is not None:
+                sel2, yo2, yi2, ys2, _, _ = result2
+                t2_val = sum(ri['route'].time for ri in sel2)
+                print(f"  [{round_name}] 第二层完成: T={t2_val}min (≤T*={t_star}), "
+                      f"架次={len(sel2)}, 耗时={t_stage2:.1f}s")
+                current_result = (sel2, yo2, yi2, ys2)
+                current_t_star = t_star
+            else:
+                print(f"  [{round_name}] 第二层无可行解，使用第一层解")
+                current_result = (sel1, yo1, yi1, ys1)
+                current_t_star = t_star
+
+            # 更新最优解（T*更小的解更优）
+            if current_t_star < best_t_star:
+                best_t_star = current_t_star
+                best_result = current_result
+                print(f"  [{round_name}] ★ 新最优: T*={best_t_star}min")
+
+            # 构建下一轮的热启动
+            sel_cur = current_result[0]
+            prev_warm = {
+                'selected': {idx_of[id(ri)] for ri in sel_cur},
+                'yo': current_result[1],
+                'yi': current_result[2],
+                'ys': current_result[3],
+            }
+
+            # 如果间隙已经很小，提前终止
+            if rel_gap <= 0.05:
+                print(f"  [{round_name}] 已达到最小间隙，搜索完成")
+
+        if best_result is None:
+            print("\n  自适应搜索全部失败，进入最终fallback...")
+            result = self._solve_fallback(routes_info, day, distances,
+                                          ob_by_fac, ib_by_fac, sh_by_od)
+            if result is None:
+                return None
+            sel, yo, yi, ys = result
+            t_star = sum(ri['route'].time for ri in sel)
+            return sel, yo, yi, ys, t_star
+
+        sel, yo, yi, ys = best_result
+        print(f"\n  自适应搜索完成: 最优T*={best_t_star}min, 架次={len(sel)}")
+        return sel, yo, yi, ys, best_t_star
 
     def _solve_fallback(self, routes_info, day, distances,
                         ob_by_fac, ib_by_fac, sh_by_od):
@@ -696,19 +911,28 @@ class Q3DailySolver:
 
     def _solve_with_lambda(self, routes_info, day, distances,
                            ob_by_fac, ib_by_fac, sh_by_od, lam, time_limit,
-                           warm_start=None):
+                           warm_start=None, objective='weighted',
+                           time_cap=None, mipstart_mode=1,
+                           fixed_selected=None, rel_gap=None):
         """
         构建并求解给定λ下的COPT模型。
 
         参数:
             warm_start: 可选热启动数据 {'selected', 'yo', 'yi', 'ys'}，
                 在 model.solve() 前注入 COPT MipStart。
+            objective: 'time'（第一层严格min T）| 'second'（第二层T<=time_cap下
+                优化二级指标）| 'weighted'（加权单目标）| 'lexicographic'（字典序）
+            time_cap: 第二层总飞机使用时间硬上限（无上界差约束），None 表示不限制
+            mipstart_mode: COPT MipStartMode 参数（0=禁用初始解，1=仅完整可行解，
+                2=可行解+子MIP补全）；第二层注入第一层完整解时使用 1
+            fixed_selected: 第二层固定路径集合（x 变量固定为第一层选择），
+                使总飞机使用时间严格等于 T*（无上界差），并大幅缩小模型
         """
         env = cp.Envr()
         model = env.createModel('Q3_Daily')
         model.setParam(cp.COPT.Param.TimeLimit, time_limit)
-        model.setParam(cp.COPT.Param.RelGap, 0.15)
-        model.setParam(cp.COPT.Param.LogToConsole, 0)
+        model.setParam(cp.COPT.Param.RelGap, rel_gap if rel_gap is not None else 0.15)
+        model.setParam(cp.COPT.Param.LogToConsole, self.LOG_TO_CONSOLE)
 
         # --- 变量 ---
         x = {}
@@ -879,7 +1103,43 @@ class Q3DailySolver:
 
         fuel_expr = cp.quicksum(ri['route'].fuel * x[idx] for idx, ri in enumerate(routes_info))
 
-        if self.USE_WEIGHTED:
+        # --- 约束5: 总飞机使用时间硬上限（保证"严格无上界差"） ---
+        if time_cap is not None:
+            model.addConstr(time_expr <= time_cap)
+            print(f"  时间硬约束: T <= {time_cap} min")
+
+        # --- 固定第一层路径选择（第二层：x 固定，仅优化人员分配） ---
+        if fixed_selected is not None:
+            n_fixed = 0
+            for ri_idx in range(len(routes_info)):
+                if ri_idx in fixed_selected:
+                    x[ri_idx].setInfo('LB', 1.0)
+                    x[ri_idx].setInfo('UB', 1.0)
+                else:
+                    x[ri_idx].setInfo('LB', 0.0)
+                    x[ri_idx].setInfo('UB', 0.0)
+                n_fixed += 1
+            print(f"  固定路径: {len(fixed_selected)} 条选中 / {n_fixed} 条全部固定")
+
+        if objective == 'time':
+            # 第一层：严格最小化总飞机使用时间（不掺入任何二级目标）
+            # RelGap 收紧至 1%，让 900s 时限被真正用于逼近最优 T*
+            model.setParam(cp.COPT.Param.RelGap, 0.01)
+            model.setObjective(time_expr, sense=cp.COPT.MINIMIZE)
+            print(f"  目标: 严格最小化总飞机使用时间")
+        elif objective == 'second':
+            # 第二层：T <= time_cap 硬约束下优化"人员在途时间 + 燃油"加权。
+            # 注意不加入利用率项（λ*seat_km - pass_km）：该项使目标矩阵 100%
+            # 稠密，根节点 LP 在时限内无法收敛、MipStart 验证被无限推迟；
+            # 在途时间与燃油为稀疏目标，能保证第二层立即可行并真正完成优化。
+            second_obj = (
+                self.W_TRANSIT * transit_expr
+                + self.W_FUEL * fuel_expr
+            )
+            model.setObjective(second_obj, sense=cp.COPT.MINIMIZE)
+            print(f"  目标: 二级指标加权 (w_transit={self.W_TRANSIT}, "
+                  f"w_fuel={self.W_FUEL}, T≤{time_cap})")
+        elif self.USE_WEIGHTED:
             # 加权单目标：同时优化时间、在途、利用率、燃油
             weighted_obj = (
                 self.W_TIME * time_expr
@@ -924,11 +1184,12 @@ class Q3DailySolver:
                 start_vals.append(float(ys_ws.get(key, 0)))
             if start_vars:
                 # 显式开启 MipStart，并允许求解器修复轻微不可行的起始解
-                model.setParam(cp.COPT.Param.MipStartMode, 1)
-                model.setParam(cp.COPT.Param.MipRepair, 1)
+                model.setParam(cp.COPT.Param.MipStartMode, mipstart_mode)
+                if mipstart_mode == 1:
+                    model.setParam(cp.COPT.Param.MipRepair, 1)
                 model.setMipStart(start_vars, start_vals)
                 print(f"  热启动注入: {len(start_vars)} 个变量 "
-                      f"(选中路径 {len(selected)} 条)")
+                      f"(选中路径 {len(selected)} 条, mode={mipstart_mode})")
 
         # --- 求解 ---
         print("  求解中...")
@@ -1509,6 +1770,7 @@ def main():
     print("\n[3] 逐日求解...")
     all_selected_routes = []
     total_time = 0
+    t_star_sum = 0  # 第一层严格最优总时间之和（阶段二/三的时间预算）
     total_fuel = 0.0
     total_pass_km = 0.0
     total_seat_km = 0.0
@@ -1545,7 +1807,8 @@ def main():
             continue
 
         solved_days.add(day)
-        sel_routes, yo_vals, yi_vals, ys_vals = result
+        sel_routes, yo_vals, yi_vals, ys_vals, t_star_day = result
+        t_star_sum += t_star_day
         for idx, ri in enumerate(sel_routes):
             ri['route_id'] = ri['route'].route_id
 
@@ -1599,8 +1862,8 @@ def main():
             n = (sum(sr['yo'].values()) + sum(sr['yi'].values()) + sum(sr['ys'].values()))
             day_load[day] += n
 
-        reallocated_total = 0
         for failed_day, demands in failed_day_demands.items():
+            reallocated_total = 0  # 每失败日单独统计，避免跨日累计污染日志
             for d in demands:
                 feasible_in_solved = [pd for pd in solved_days
                                       if pd in Q3DemandDayAllocator.compute_feasible_days(d, PLANNING_DATES)]
@@ -1617,7 +1880,7 @@ def main():
                   f"(剩余无可行日 {len(demands) - reallocated_total}人)")
         print(f"  重分配完成: {sum(day_load.values())} 人分布于 {sorted([str(d) for d in solved_days])}")
 
-    T_star = total_time
+    T_star = t_star_sum
     print(f"\n阶段一总飞机使用时间 T* = {T_star} 分钟 ({T_star/60:.1f}h)")
     print(f"总架次: {len(all_selected_routes)}, 总燃油: {total_fuel:.1f}kg")
 
@@ -1753,6 +2016,10 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+
 
 
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 文件: column_generation.py
-功能: C8 简化列生成（Reactive Column Generation）单日验证脚本
+功能: C8 简化列生成（Reactive/Lagrangian-driven Column Generation）单日验证脚本
 项目: 2026策联杯 B题 - 海上油田人员直升机运载计划编排
 
 思路:
@@ -10,6 +10,10 @@
   第三步: 为薄弱设施生成新路径（更密集起飞时刻 + 更多多设施组合）
   第四步: 将新路径加入池中重新求解 MIP
   第五步: 比较两次求解结果（路径数、架次、利用率、总时间、燃油）
+
+补充模式:
+  --mode reactive  (默认) 原有薄弱设施启发式补列
+  --mode lagrangian 基于机队约束乘子的 reduced cost 定价补列（不引入 HiGHS）
 
 运行:
   E:\\Python\\python.exe column_generation.py
@@ -33,6 +37,7 @@ if _PROBLEM12_DIR not in sys.path:
 from config import AIRCRAFT_TYPES, AIRPORTS
 from base_models import make_route, TSPSolver
 from problem2_solution import Q2RoutePreprocessor
+from lagrangian_bound import LagrangianBoundAnalyzer
 from problem3_solution import (
     Q3DataLoader,
     Q3DemandDayAllocator,
@@ -391,6 +396,10 @@ def main():
 
     # 0. 配置求解器参数
     patch_solver_params()
+    # 演示模式：单目标快速求解，避免两阶段长时间搜索
+    Q3DailySolver.USE_TWO_STAGE = False
+    Q3DailySolver.TIME_LIMITS = [60]
+    Q3DailySolver.RETRY_TIME_LIMIT = 60
 
     # 1. 加载数据
     print("\n[1] 加载数据...")
@@ -491,5 +500,198 @@ def main():
     print_interpretation(metrics1, metrics2, weak_facs)
 
 
+# ==================== 拉格朗日乘子驱动列生成扩展 ====================
+
+def compute_lagrangian_multipliers_from_selected(routes_info, selected_indices, analyzer, step=0.5, use_violation_only=True):
+    """基于当前选中路径集合，计算简化的拉格朗日乘子（针对机队约束）。"""
+    selected_set = set(selected_indices)
+    lam = {}
+    for (key, ri_list, max_count) in analyzer.fleet_constraints:
+        n_sel = sum(1 for ri in ri_list if ri in selected_set)
+        violation = n_sel - max_count
+        lam[key] = max(0.0, step * violation) if use_violation_only else step * violation
+    return lam
+
+
+def generate_lagrangian_new_routes(weak_facs, day_demands, day, distances, existing_keys, rid_counter, analyzer, lam):
+    """基于拉格朗日乘子生成新路径（定价驱动）。"""
+    base_new, n_base = generate_new_routes(weak_facs, day_demands, day, distances, existing_keys, rid_counter)
+    if not base_new:
+        return base_new, n_base
+
+    scored = []
+    for ri in base_new:
+        r = ri['route']
+        slots = ri.get('time_slots', [])
+        penalty = sum(lam.get((r.airport, r.aircraft_type, slot), 0.0) for slot in slots)
+        pricing = (Q3DailySolver.W_TIME * r.time
+                   + Q3DailySolver.W_UTIL * Q3DailySolver.LAMBDA_INIT * r.capacity * r.total_distance
+                   + Q3DailySolver.W_FUEL * r.fuel
+                   + penalty)
+        scored.append((pricing, ri))
+
+    scored.sort(key=lambda x: x[0])
+    chosen = [ri for _, ri in scored[:MAX_NEW_ROUTES]]
+    return chosen, n_base
+
+
+def main_lagrangian(rounds=3):
+    """拉格朗日乘子驱动列生成（基于当前 COPT 体系，不引入 HiGHS）。"""
+    print("=" * 78)
+    print("C8 拉格朗日乘子驱动列生成（Lagrangian-driven Column Generation）- 单日验证")
+    print(f"测试日期: {TEST_DAY}, 轮数: {rounds}")
+    print("=" * 78)
+
+    patch_solver_params()
+
+    print("\n[1] 加载数据...")
+    loader = Q3DataLoader()
+    distances = loader.load_distances()
+    all_demands = loader.load_demands_q3()
+    non_temp = [d for d in all_demands if d['task_type'] != 'temporary']
+    print(f"  总需求: {len(all_demands)}, 非临时(阶段一): {len(non_temp)}")
+
+    print("\n[2] 需求-日期分配...")
+    allocation, daily_load = Q3DemandDayAllocator.allocate(non_temp, PLANNING_DATES)
+    day_demands = [d for d in non_temp if allocation[d['person_id']] == TEST_DAY]
+    print(f"  {TEST_DAY} 分配需求: {len(day_demands)} 人")
+    if not day_demands:
+        print("  错误: 该日无需求，终止")
+        return
+
+    print("\n[3] 生成初始路径池（原始 DEPARTURE_OFFSETS）...")
+    generator = Q3RouteGenerator(distances)
+    original_cluster_fn = Q3RouteGenerator._compute_cluster_offsets
+    Q3RouteGenerator._compute_cluster_offsets = lambda self, dd, day: list(DEPARTURE_OFFSETS)
+    try:
+        rid_counter = [0]
+        routes_info = generator.generate_daily_routes(day_demands, TEST_DAY, rid_counter[0])
+    finally:
+        Q3RouteGenerator._compute_cluster_offsets = original_cluster_fn
+    if routes_info:
+        rid_counter[0] = max(r['route'].route_id for r in routes_info)
+    print(f"  初始候选路径: {len(routes_info)} 条")
+
+    print("\n[4] 第一次求解 MIP（初始路径池）...")
+    solver = Q3DailySolver()
+    result1 = solver.solve(routes_info, day_demands, TEST_DAY, distances)
+    if result1 is None:
+        print("  错误: 第一次求解无可行解，终止")
+        return
+    if len(result1) == 5:
+        sel1, yo1, yi1, ys1, t_star1 = result1
+    else:
+        sel1, yo1, yi1, ys1 = result1
+        t_star1 = None
+    m1 = compute_metrics(sel1, yo1, yi1, ys1, routes_info, pool_size=len(routes_info), distances=distances)
+    print(f"\n  [初始解] 架次={m1['n_flights']}, 时间={m1['total_time']}min, 在途={m1['total_transit']}min, 燃油={m1['total_fuel']:.1f}kg, 利用率={m1['utilization']:.4f}")
+
+    print("\n[5] 薄弱环节分析...")
+    weak_facs, load_info = analyze_weak_facilities(sel1, yo1, routes_info, day_demands)
+    print_load_info(load_info)
+    if not weak_facs:
+        ranked = sorted(load_info.items(), key=lambda kv: kv[1]['load'])
+        weak_facs = [f for f, _ in ranked[:WEAK_FALLBACK_TOPK] if load_info[f]['cap'] > 0]
+        print(f"\n  无设施载客率 < {WEAK_THRESHOLD}，取载客率最低 {len(weak_facs)} 个设施作为薄弱: {weak_facs}")
+    else:
+        weak_facs = sorted(weak_facs, key=lambda f: load_info[f]['load'])[:WEAK_TOPK]
+        print(f"\n  薄弱设施（载客率 < {WEAK_THRESHOLD}），取最薄弱 {len(weak_facs)} 个: {weak_facs}")
+
+    print("\n[6] 构建拉格朗日分析器（获取机队约束结构）...")
+    analyzer = LagrangianBoundAnalyzer(routes_info, day_demands, TEST_DAY, distances)
+    if not analyzer.fleet_constraints:
+        print("  无机队约束，退化为普通 reactive 列生成；直接结束。")
+        return
+
+    best_m = m1
+    best_sel, best_yo, best_yi, best_ys = sel1, yo1, yi1, ys1
+    best_pool = routes_info
+
+    for rd in range(1, rounds + 1):
+        print(f"\n===== 乘子驱动列生成 第 {rd}/{rounds} 轮 =====")
+
+        selected_indices = {routes_info.index(ri) for ri in sel1} if rd == 1 else {best_pool.index(ri) for ri in best_sel}
+        lam = compute_lagrangian_multipliers_from_selected(best_pool, selected_indices, analyzer, step=0.5, use_violation_only=True)
+        n_pos = sum(1 for v in lam.values() if v > 0)
+        print(f"  计算乘子完成: 正乘子约束数={n_pos}/{len(lam)}")
+
+        existing_keys = build_existing_keys(best_pool, TEST_DAY)
+        new_routes, n_base = generate_lagrangian_new_routes(
+            weak_facs, day_demands, TEST_DAY, distances, existing_keys, rid_counter, analyzer, lam
+        )
+        print(f"  生成基础路径(Route): {n_base} 个")
+        print(f"  新增候选路径(定价后截断): {len(new_routes)} 条")
+        if not new_routes:
+            print("  本轮未生成新路径，提前结束。")
+            break
+
+        best_pool = best_pool + new_routes
+        result = solver.solve(best_pool, day_demands, TEST_DAY, distances)
+        if result is None:
+            print("  本轮重解失败，保持上一轮结果。")
+            continue
+        if len(result) == 5:
+            cur_sel, cur_yo, cur_yi, cur_ys, _ = result
+        else:
+            cur_sel, cur_yo, cur_yi, cur_ys = result
+        cur_m = compute_metrics(cur_sel, cur_yo, cur_yi, cur_ys, best_pool, pool_size=len(best_pool), distances=distances)
+        print(f"  [本轮解] 架次={cur_m['n_flights']}, 时间={cur_m['total_time']}min, 在途={cur_m['total_transit']}min, 燃油={cur_m['total_fuel']:.1f}kg, 利用率={cur_m['utilization']:.4f}")
+
+        if (cur_m['total_time'], cur_m['total_transit'], cur_m['total_fuel']) < (best_m['total_time'], best_m['total_transit'], best_m['total_fuel']):
+            best_m, best_sel, best_yo, best_yi, best_ys = cur_m, cur_sel, cur_yo, cur_yi, cur_ys
+            print("  本轮结果优于上轮，已更新最优。")
+        else:
+            print("  本轮未优于上轮，保留历史最优。")
+
+    def fmt_delta(new, old, better_is_lower=True):
+        delta = new - old
+        pct = (delta / old * 100) if abs(old) > 1e-9 else 0.0
+        sign = '+' if delta >= 0 else ''
+        tag = '-' if abs(delta) < 1e-9 else ('改善' if (delta < 0) == better_is_lower else '恶化')
+        return f"{sign}{delta:.2f} ({sign if pct>=0 else ''}{pct:.2f}%) [{tag}]"
+
+    print("\n" + "=" * 78)
+    print("C8 拉格朗日乘子驱动列生成 - 结果对比")
+    print("=" * 78)
+    print(f"  {'指标':<16}{'初始解':>16}{'乘子驱动最终解':>20}{'变化':>30}")
+    print("  " + "-" * 78)
+    for name, v1, v2, delta_str, num_fmt in [
+        ('路径池大小', len(routes_info), len(best_pool), fmt_delta(len(best_pool), len(routes_info), True), 'd'),
+        ('选中架次', m1['n_flights'], best_m['n_flights'], fmt_delta(best_m['n_flights'], m1['n_flights'], True), 'd'),
+        ('总时间(min)', m1['total_time'], best_m['total_time'], fmt_delta(best_m['total_time'], m1['total_time'], True), 'd'),
+        ('人员在途(min)', m1['total_transit'], best_m['total_transit'], fmt_delta(best_m['total_transit'], m1['total_transit'], True), 'd'),
+        ('燃油(kg)', m1['total_fuel'], best_m['total_fuel'], fmt_delta(best_m['total_fuel'], m1['total_fuel'], True), '.1f'),
+        ('利用率', m1['utilization'], best_m['utilization'], fmt_delta(best_m['utilization'], m1['utilization'], False), '.4f'),
+    ]:
+        print(f"  {name:<16}{format(v1, num_fmt):>16}{format(v2, num_fmt):>20}{delta_str:>30}")
+    print("=" * 78)
+    print("\n说明:")
+    print("  1) 本轮采用“当前解 -> 机队约束违反 -> 乘子 -> 定价生成新列”的拉格朗日驱动策略。")
+    print("  2) 与原 reactive 列生成相比，更关注减少机队约束违反，从而更有效引导列扩张。")
+    print("  3) 若时间/在途/燃油未改善，通常受 MIP 时限/间隙影响；可增大 rounds 或时限继续压。")
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    args = sys.argv[1:]
+    mode = 'reactive'
+    for i,a in enumerate(args):
+        if a == '--mode' and i+1 < len(args):
+            mode = args[i+1]
+    if mode == 'lagrangian':
+        main_lagrangian()
+    else:
+        main()
+
+if __name__ == '__main__':
+    import sys
+    args = sys.argv[1:]
+    mode = 'reactive'
+    for i,a in enumerate(args):
+        if a == '--mode' and i+1 < len(args):
+            mode = args[i+1]
+    if mode == 'lagrangian':
+        main_lagrangian()
+    else:
+        main()
+

@@ -256,6 +256,8 @@ def main():
     Q3DailySolver.RETRY_TIME_LIMIT = 60
     # 确保使用加权单目标模式
     Q3DailySolver.USE_WEIGHTED = True
+    # Pareto 扫描为权重灵敏度对比实验，关闭两层模式（保持加权单目标口径）
+    Q3DailySolver.USE_TWO_STAGE = False
     print(f"  DINKELBACH_MAX_ITERS = {Q3DailySolver.DINKELBACH_MAX_ITERS}")
     print(f"  TIME_LIMITS = {Q3DailySolver.TIME_LIMITS}")
     print(f"  RETRY_TIME_LIMIT = {Q3DailySolver.RETRY_TIME_LIMIT}")
@@ -286,7 +288,7 @@ def main():
             })
             continue
 
-        sel_routes, yo_vals, yi_vals, ys_vals = result
+        sel_routes, yo_vals, yi_vals, ys_vals, _ = result
         total_time, seat_util, n_flights, total_fuel = extract_metrics(
             sel_routes, yo_vals, yi_vals, ys_vals, routes_info)
 
