@@ -61,6 +61,7 @@ TIME_SLOT_MINUTES = 10
 PLANNING_DATES = [date(2026, 8, d) for d in range(3, 10)]
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTPUT_DIR_Q3 = os.path.join(PROJECT_DIR, 'output', 'Problem3')
+# 起飞时刻偏移列表（分钟），06:00-10:00用30min粒度，10:00后用60min
 DEPARTURE_OFFSETS = [0, 30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660]
 
 
@@ -104,11 +105,19 @@ class Q3DemandDayAllocator:
         return feasible
 
     @staticmethod
+    def _time_window_bucket(demand):
+        """将需求按最早接送时间归入2小时桶，用于时间窗聚类均衡"""
+        hour = demand['earliest_pickup'].hour
+        return hour // 2
+
+    @staticmethod
     def allocate(demands, dates):
         """
         贪心分配需求到日期，按可行日期数升序分配。
-        负载度量同时考虑总人数和需求类型（出海/海返/穿梭）分布，
-        避免某日需求类型过度集中导致MIP不可行。
+        负载度量同时考虑：
+          1. 总人数（避免某日过载）
+          2. 需求类型分布（出海/海返/穿梭，避免类型集中）
+          3. 时间窗桶分布（2小时粒度，避免同时段需求集中导致机队冲突）
         """
         demand_days = {}
         for d in demands:
@@ -118,6 +127,7 @@ class Q3DemandDayAllocator:
 
         daily_load = {d: 0 for d in dates}
         daily_type_load = {d: defaultdict(int) for d in dates}
+        daily_bucket_load = {d: defaultdict(int) for d in dates}
         allocation = {}
 
         for d in sorted_demands:
@@ -128,17 +138,23 @@ class Q3DemandDayAllocator:
                 allocation[d['person_id']] = target
                 daily_load[target] += 1
                 daily_type_load[target][d['task_type']] += 1
+                bucket = Q3DemandDayAllocator._time_window_bucket(d)
+                daily_bucket_load[target][bucket] += 1
                 continue
+
+            bucket = Q3DemandDayAllocator._time_window_bucket(d)
 
             def load_key(dd):
                 total = daily_load[dd]
                 type_count = daily_type_load[dd][d['task_type']]
-                return (total, type_count)
+                bucket_count = daily_bucket_load[dd][bucket]
+                return (total, type_count, bucket_count)
 
             best_date = min(feasible, key=load_key)
             allocation[d['person_id']] = best_date
             daily_load[best_date] += 1
             daily_type_load[best_date][d['task_type']] += 1
+            daily_bucket_load[best_date][bucket] += 1
 
         return allocation, daily_load
 
@@ -223,16 +239,18 @@ class Q3RouteGenerator:
 
     剪枝策略:
     1. 双设施路径: 节省值排序，取前300对（与Q1规模对齐）
-    2. 三设施路径: 距离阈值 ≤ 100km，数量上限 300条
-    3. 四设施路径: 距离阈值 ≤ 80km，数量上限 300条（从最优三设施扩展）
-    4. 五设施路径: 距离阈值 ≤ 60km，累计上限 300条（从最优四设施扩展）
+    2. 三设施路径: 距离阈值 ≤ 120km，数量上限 300条
+    3. 四设施路径: 距离阈值 ≤ 100km，数量上限 300条（从最优三设施扩展）
+    4. 五设施路径: 距离阈值 ≤ 80km，累计上限 300条（从最优四设施扩展）
     5. 穿梭OD对专用路径: 确保所有有穿梭需求的设施对至少有一条覆盖路径
     6. 燃油检查剪枝: 通过make_route函数调用FuelChecker.check_fuel，自动应用提前剪枝
+    7. 起飞偏移: 14个偏移（06:00-10:00用30min粒度），平衡覆盖率与MIP规模
 
     设计原理:
     - Q3有4000人（Q1的2.5倍），路径池必须相应扩大
     - 4-5设施多停靠路径能显著提升架次效率，降低总飞机使用时间
     - 渐进式距离阈值保证燃油可行性
+    - 14个偏移控制MIP规模，确保2h内可收敛
     """
 
     def __init__(self, distances):
@@ -329,7 +347,7 @@ class Q3RouteGenerator:
                 for f3 in fac_list:
                     if f3 in r2.dest_facilities:
                         continue
-                    if min(self.distances[f3][f] for f in existing) > 100:
+                    if min(self.distances[f3][f] for f in existing) > 120:
                         continue
                     best_order, _ = TSPSolver.best_order(airport, existing + [f3], self.distances)
                     for atype in AIRCRAFT_TYPES:
@@ -338,7 +356,7 @@ class Q3RouteGenerator:
                             base_routes.append(r)
                             count += 1
 
-            # 四设施路径（从最优三设施路径扩展，距离阈值 ≤ 80km）
+            # 四设施路径（从最优三设施路径扩展，距离阈值 ≤ 100km）
             triple_groups = defaultdict(list)
             for r in base_routes:
                 if r.airport == airport and len(r.dest_facilities) == 3:
@@ -352,7 +370,7 @@ class Q3RouteGenerator:
                 for f4 in fac_list:
                     if f4 in r3.dest_facilities:
                         continue
-                    if min(self.distances[f4][f] for f in existing) > 80:
+                    if min(self.distances[f4][f] for f in existing) > 100:
                         continue
                     best_order, _ = TSPSolver.best_order(airport, existing + [f4], self.distances)
                     for atype in AIRCRAFT_TYPES:
@@ -361,7 +379,7 @@ class Q3RouteGenerator:
                             base_routes.append(r)
                             count += 1
 
-            # 五设施路径（从最优四设施路径扩展，距离阈值 ≤ 60km）
+            # 五设施路径（从最优四设施路径扩展，距离阈值 ≤ 80km）
             quad_groups = defaultdict(list)
             for r in base_routes:
                 if r.airport == airport and len(r.dest_facilities) == 4:
@@ -375,7 +393,7 @@ class Q3RouteGenerator:
                 for f5 in fac_list:
                     if f5 in r4.dest_facilities:
                         continue
-                    if min(self.distances[f5][f] for f in existing) > 60:
+                    if min(self.distances[f5][f] for f in existing) > 80:
                         continue
                     best_order, _ = TSPSolver.best_order(airport, existing + [f5], self.distances)
                     for atype in AIRCRAFT_TYPES:

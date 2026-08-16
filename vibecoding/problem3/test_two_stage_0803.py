@@ -32,6 +32,8 @@ def main():
     print('候选路径:', len(routes_info))
 
     Q3DailySolver.TWO_STAGE_TIME_LIMITS = [7200, 7200]
+    Q3DailySolver.USE_ADAPTIVE = False
+    Q3DailySolver.USE_TWO_STAGE = True
     Q3DailySolver.LOG_TO_CONSOLE = 1
     solver = Q3DailySolver()
     t0 = time.time()
