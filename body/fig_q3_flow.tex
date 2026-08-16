@@ -25,9 +25,9 @@
 \node[box2, right=0.6cm of alloc] (daily) {逐日 MIP 求解};
 
 % 第二行（每日内部）
-\node[box] (cpm) at (-3.5, 0.6) {CPM 时间窗收缩\\剔除不可行路径};
-\node[box, right=0.6cm of cpm] (route) {受限路径池\\+ 时刻偏移};
-\node[box, right=0.6cm of route] (mip) {加权单目标 MIP\\+ Dinkelbach};
+\node[box, below=0.4cm of daily] (cpm) {CPM 时间窗收缩\\剔除不可行路径};
+\node[box, left=0.6cm of cpm] (route) {受限路径池\\+ 时刻偏移};
+\node[box, left=0.6cm of route] (mip) {加权单目标 MIP\\+ Dinkelbach};
 
 % 汇总
 \node[box2] (tstar) at (0, -0.6) {汇总 7 日 $\to T^*$};
@@ -44,10 +44,10 @@
 % 箭头
 \draw[arrow] (decouple) -- (alloc);
 \draw[arrow] (alloc) -- (daily);
-\draw[arrow] (daily) -- (cpm);
+\draw[arrow] (daily.south) -- (cpm.north);
 \draw[arrow] (cpm) -- (route);
 \draw[arrow] (route) -- (mip);
-\draw[arrow] (mip) -- (tstar);
+\draw[arrow] (mip) |- (tstar);
 \draw[arrow] (tstar) -- (s2title);
 \draw[arrow] (s2title) -- (knapsack);
 \draw[arrow] (knapsack) -- (output);
