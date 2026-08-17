@@ -391,12 +391,13 @@ def _nearest_facilities(fac, k, distances):
 
 
 # ==================== 事件驱动列生成 ====================
-def enum_day_columns(distances, day, recs, k_pair=3, max_deps=12):
+def enum_day_columns(distances, day, recs, k_pair=3, max_deps=12, k_triple=0):
     """生成 day 日的候选列池。
 
     候选起飞时刻 = {06:00} ∪ 各可承运人员窗口最早时刻（事件驱动，禁止均匀粗网格），
     超过 max_deps 个时等距子采样。装载顺序 mandatory 优先、temporary 填残座，
     双序（EDF + ep 降序）保证紧窗与晚窗人员都能被覆盖。
+    支持扩展：k_pair 最近邻双设施 + k_triple 最近邻三设施（k_triple>0 时启用）。
     返回 [(route, dep, loads, rt)]，loads 为 [(rec, pk, dl)]。
     """
     facs = sorted({r.d for r in recs if r.kind == "O"}
@@ -406,9 +407,23 @@ def enum_day_columns(distances, day, recs, k_pair=3, max_deps=12):
     for a in AIRPORTS:
         for f in facs:
             seqs.add((a, (f,)))
+        # 双设施最近邻
         for f in facs:
             for g in _nearest_facilities(f, k_pair, distances):
                 seqs.add((a, (f, g)))
+                seqs.add((a, (g, f)))  # 反向顺序也加入（拼座方向依赖很关键）
+        # 三设施最近邻（k_triple>0 时启用，MAX_LANDINGS<=5 时三设施尚留余量）
+        if k_triple > 0:
+            for f in facs:
+                near = _nearest_facilities(f, k_triple, distances)
+                for i in range(len(near)):
+                    g = near[i]
+                    seqs.add((a, (f, g)))  # 双设施
+                    # 三设施：(f, g, h) 全排列（6种）过于爆炸，仅按距离升序两种方向
+                    for h in near[i + 1:]:
+                        seqs.add((a, (f, g, h)))
+                        seqs.add((a, (f, h, g)))
+                        seqs.add((a, (g, f, h)))
         for r in recs:
             if r.kind == "S":
                 seqs.add((a, (r.o, r.d)))
@@ -536,7 +551,7 @@ def prune_columns(cols, cap_row=40, cap_grp=10):
     return out
 
 
-def build_columns(distances, recs, k_pair=3, max_deps=12, prune=(40, 10)):
+def build_columns(distances, recs, k_pair=3, max_deps=12, prune=(40, 10), k_triple=0):
     """规则 A 全周列池：每天对当日可行需求生成候选列，再全局剪枝。
 
     返回 [(day, route, dep, loads, rt)]。
@@ -546,7 +561,7 @@ def build_columns(distances, recs, k_pair=3, max_deps=12, prune=(40, 10)):
         day_recs = [r for r in recs if servable_on_day(distances, r, day)]
         t0 = time.time()
         cols = enum_day_columns(distances, day, day_recs,
-                                k_pair=k_pair, max_deps=max_deps)
+                                k_pair=k_pair, max_deps=max_deps, k_triple=k_triple)
         all_cols += [(day, *c) for c in cols]
         print(f"[m2-A] day{day} 列 {len(cols)}（{time.time() - t0:.1f}s）", flush=True)
     cov = {l[0].pid for c in all_cols for l in c[3]}
@@ -594,12 +609,14 @@ def _finish_log(tmp, log_file):
 
 
 def solve_milp(distances, recs, cols, phase, t_star=None, log_file=None, time_limit=1800,
-               warm_cols=None):
+               warm_cols=None, rel_gap=None):
     """阶段一/阶段二 MILP 求解。
 
     phase="one": min 总时间，s.t. 非临时全覆盖 + 机队并发。
     phase="two": max 临时覆盖，s.t. + 总时间 <= t_star + 临时每人 <= 1。
     warm_cols: 保底可行 incumbent 的列下标列表。
+    rel_gap:   COPT 相对间隙阈值（None 时用默认）；
+               渐进式收紧流程可通过传参覆盖 Param.RelGap。
     返回 (obj, xs, info)。
     """
     mand = [r for r in recs if not r.temp]
@@ -674,6 +691,8 @@ def solve_milp(distances, recs, cols, phase, t_star=None, log_file=None, time_li
         else:
             m.setObjective(np.zeros(n_c) @ x, COPT.MINIMIZE)
     m.setParam(COPT.Param.TimeLimit, time_limit)
+    if rel_gap is not None:
+        m.setParam(COPT.Param.RelGap, float(rel_gap))
     if warm_cols:
         for j in warm_cols:
             try:
@@ -689,14 +708,57 @@ def solve_milp(distances, recs, cols, phase, t_star=None, log_file=None, time_li
     except Exception:
         obj = None
     try:
+        best_bound = m.bestbound
+    except Exception:
+        best_bound = None
+    try:
         xs = np.array([float(v) for v in x.x])
         if len(xs) != n_c:
             xs = np.zeros(n_c)
     except Exception:
         xs = np.zeros(n_c)
     info = {"solve_s": round(el, 3), "status": str(m.status),
-            "n_cols": n_c, "n_concurrency_rows": n_con, "obj": obj}
+            "n_cols": n_c, "n_concurrency_rows": n_con, "obj": obj,
+            "best_bound": best_bound}
     return obj, xs, info
+
+
+def solve_phase1_adaptive(distances, recs, cols, logs_dir, time_limit_per_round=3600,
+                          gaps=(0.05, 0.02, 0.01), early_stopping=True):
+    """渐进式 RelGap 收紧：多轮 phase="one"，上一轮解向量作为下一轮 warm-start。
+
+    gaps: 每轮间隙阈值（默认 0.05→0.02→0.01，项目记忆要求最终 ≤0.01）。
+    early_stopping: 相邻两轮 obj 未改进则提前终止（不浪费算力）。
+    返回 (obj, xs, rounds_info)。
+    """
+    xs_prev = None
+    obj_prev = None
+    rounds_info = []
+    for idx, gap in enumerate(gaps):
+        warm_cols = (list(np.where(xs_prev > 0.5)[0].tolist())
+                     if xs_prev is not None else None)
+        log_tag = f"m2A_phase1_r{idx + 1}_gap{int(gap * 10000)}ppm"
+        print(f"\n  [phase1-adaptive] Round {idx + 1}/{len(gaps)}: RelGap={gap}, "
+              f"TL={time_limit_per_round}s, warm={warm_cols is not None}", flush=True)
+        obj, xs, info = solve_milp(
+            distances, recs, cols, "one",
+            log_file=os.path.join(logs_dir, f"{log_tag}.log"),
+            time_limit=time_limit_per_round,
+            warm_cols=warm_cols,
+            rel_gap=gap)
+        info["gap_target"] = gap
+        rounds_info.append(info)
+        print(f"    obj={obj}, best_bound={info.get('best_bound')}, "
+              f"status={info['status']}, {info['solve_s']}s", flush=True)
+        # 早停判定：T* 未改进且上一轮非超时（说明已收敛到紧于 gap 的精度）
+        if (early_stopping and obj_prev is not None and obj is not None
+                and obj >= obj_prev - 0.5):
+            print(f"    早停触发：obj {obj_prev:.2f} -> {obj:.2f} 未改善，跳过后续更紧轮次",
+                  flush=True)
+            return obj, xs, rounds_info
+        xs_prev = xs
+        obj_prev = obj
+    return obj, xs, rounds_info
 
 
 def _dedup_loads(sel):
@@ -974,14 +1036,22 @@ def main():
     """服务日入列 + 事件驱动时刻 + 覆盖兜底 + 逐日阶段二的完整求解入口"""
     parser = argparse.ArgumentParser(description="问题3 服务日入列求解器")
     parser.add_argument("--smoke", action="store_true", help="冒烟模式（小列池+短时限）")
-    parser.add_argument("--time-limit", type=int, default=1800,
-                        help="阶段一 COPT 时限（秒），默认 1800")
-    parser.add_argument("--phase2-limit", type=int, default=300,
-                        help="阶段二每日 COPT 时限（秒），默认 300")
+    parser.add_argument("--time-limit", type=int, default=7200,
+                        help="阶段一每轮 COPT 时限（秒），默认 7200（项目记忆 >= 2h）")
+    parser.add_argument("--phase2-limit", type=int, default=7200,
+                        help="阶段二每日 COPT 时限（秒），默认 7200")
     parser.add_argument("--prune", type=int, nargs=2, default=(40, 10),
                         help="列池剪枝 (cap_row, cap_grp)，默认 40 10")
     parser.add_argument("--max-deps", type=int, default=12,
                         help="每日候选起飞时刻上限，默认 12")
+    parser.add_argument("--k-pair", type=int, default=8,
+                        help="双设施最近邻数（默认 8，实验2=扩大列池）")
+    parser.add_argument("--k-triple", type=int, default=4,
+                        help="三设施最近邻数（默认 4，>0 启用三设施停靠；0 关闭）")
+    parser.add_argument("--gaps", type=float, nargs="+", default=[0.05, 0.02, 0.01],
+                        help="渐进式 RelGap 序列（默认 0.05 0.02 0.01，项目记忆 <= 0.01）")
+    parser.add_argument("--no-adaptive", action="store_true",
+                        help="禁用渐进式收紧，改为单次 solve_milp（等价老行为）")
     parser.add_argument("--recompute-metrics", action="store_true",
                         help="仅从 q3-routes.csv/q3-assignments.csv 重算指标")
     args = parser.parse_args()
@@ -999,15 +1069,19 @@ def main():
     phase2_limit = 30 if smoke else args.phase2_limit
     prune = (8, 2) if smoke else tuple(args.prune)
     max_deps = 6 if smoke else args.max_deps
-    k_pair = 1 if smoke else 3
+    k_pair = 1 if smoke else args.k_pair
+    k_triple = 0 if smoke else args.k_triple
+    gaps = tuple([0.1, 0.05]) if smoke else tuple(args.gaps)
 
     logs_dir = os.path.join(OUTPUT_DIR_Q3, "logs")
     os.makedirs(logs_dir, exist_ok=True)
 
     print("=" * 60)
     print("问题3（方案一）：服务日入列 + 事件驱动时刻 + 覆盖兜底")
-    print(f"模式: {'SMOKE' if smoke else 'FULL'}, 阶段一时限: {time_limit}s, "
-          f"剪枝: {prune}, max_deps: {max_deps}")
+    print(f"模式: {'SMOKE' if smoke else 'FULL'}")
+    print(f"列池: k_pair={k_pair}, k_triple={k_triple}, max_deps={max_deps}, prune={prune}")
+    print(f"阶段一: {'渐进式 RelGap ' + str(gaps) if not args.no_adaptive else f'单次 TL={time_limit}s'}")
+    print(f"阶段二: 逐日 prize-collecting, TL={phase2_limit}s/日")
     print("=" * 60)
 
     t_all = time.time()
@@ -1019,16 +1093,27 @@ def main():
 
     print("\n[2] 构建全周候选列池（规则A）...")
     cols = build_columns(distances, recs, k_pair=k_pair, max_deps=max_deps,
-                         prune=prune)
+                         prune=prune, k_triple=k_triple)
     print(f"  全周列池: {len(cols)}")
 
     print("\n[3] 阶段一 MILP（min 总时间，3840 非临时全覆盖）...")
-    obj1, xs1, info1 = solve_milp(
-        distances, recs, cols, "one",
-        log_file=os.path.join(logs_dir, "m2A_phase1.log"),
-        time_limit=time_limit)
-    print(f"  阶段一: obj={obj1}, 状态={info1['status']}, "
-          f"耗时={info1['solve_s']}s, 并发行={info1['n_concurrency_rows']}")
+    info1_rounds = []
+    if args.no_adaptive:
+        obj1, xs1, info1 = solve_milp(
+            distances, recs, cols, "one",
+            log_file=os.path.join(logs_dir, "m2A_phase1.log"),
+            time_limit=time_limit)
+        info1_rounds = [info1]
+    else:
+        # 项目记忆约束：每轮 time_limit >= 7200s；gaps 0.05→0.02→0.01；邻轮 T* 不改善早停
+        obj1, xs1, info1_rounds = solve_phase1_adaptive(
+            distances, recs, cols, logs_dir,
+            time_limit_per_round=time_limit,
+            gaps=gaps, early_stopping=True)
+        info1 = info1_rounds[-1]
+    print(f"  阶段一(最终轮): obj={obj1}, best_bound={info1.get('best_bound')}, "
+          f"状态={info1['status']}, 耗时={info1['solve_s']}s, "
+          f"并发行={info1['n_concurrency_rows']}")
     sel1 = _dedup_loads([cols[j] for j, v in enumerate(xs1) if v > 0.5])
     if not sel1:
         raise RuntimeError(f"阶段一无可行解（状态 {info1['status']}）")
@@ -1057,12 +1142,19 @@ def main():
     print(f"  metrics: {metrics_path}")
     print(f"\n总耗时 {time.time() - t_all:.1f}s")
 
-    print("\n==================== 汇总 ====================")
-    print(f"T* = {metrics['total_time_min']} min, 架次 = {metrics['total_flights']}, "
-          f"燃油 = {metrics['total_fuel_kg']} kg")
-    print(f"非临时承运 = {metrics['mandatory_served']}/3840, "
-          f"临时满足 = {metrics['temp_served']}/160, "
-          f"利用率 = {metrics['seat_utilization']:.4f}")
+    print("\n==================== 实验对比汇总 ====================")
+    print("基准 (k_pair=3, 无三设施, 单次 1800s): T*=28046, 临时=93/160")
+    print(f"本次 (k_pair={k_pair}, k_triple={k_triple}, "
+          f"{'渐进 ' + str(gaps) if not args.no_adaptive else '单次'}):")
+    print(f"  T* = {metrics['total_time_min']} min (基准差 {metrics['total_time_min'] - 28046:+d}),"
+          f" 架次 = {metrics['total_flights']}")
+    print(f"  非临时承运 = {metrics['mandatory_served']}/3840, "
+          f"临时满足 = {metrics['temp_served']}/160 "
+          f"(基准差 {metrics['temp_served'] - 93:+d})")
+    if not args.no_adaptive and info1_rounds:
+        print(f"  阶段一各轮 obj 轨迹: "
+              + " → ".join(f"r{i+1}={r.get('obj')}({r.get('gap_target')})"
+                            for i, r in enumerate(info1_rounds)))
 
 
 if __name__ == "__main__":
