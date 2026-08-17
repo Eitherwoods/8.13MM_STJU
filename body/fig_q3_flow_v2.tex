@@ -1,0 +1,103 @@
+% -*- coding: utf-8 -*-
+% 问题三两阶段求解流程图（服务日入列 + 事件驱动时刻 + 覆盖兜底 + 逐日阶段二）
+% v2：增加按天解耦结构、拆分候选列池生成步骤、修正阶段一目标描述
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    box/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=blue!8},
+    boxg/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=green!10},
+    boxo/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=orange!12},
+    boxr/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=red!8},
+    boxp/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=purple!10},
+    boxteal/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.75cm,
+        align=center, font=\footnotesize, fill=teal!10},
+    arrow/.style={->, >=stealth, thick, draw=black},
+    darrow/.style={->, >=stealth, thick, draw=black, dashed},
+]
+
+% ==================== 阶段一标题 ====================
+\node[font=\small\bfseries, fill=green!15, draw, rounded corners, minimum width=14cm, minimum height=0.5cm] (s1) at (0, 6.8) {阶段一：固定排班（3840 人，不含临时任务）};
+
+% ==================== 第一行：时间窗解析与候选序列 ====================
+\node[boxg] (window) at (-5.4, 5.7) {时间窗解析\\可行日期集 $D_p$ + CPM 收缩};
+\node[boxg] (seq)    at (-1.4, 5.7) {候选序列枚举\\直达 / 设施对 / 穿梭 OD 对};
+\node[boxg] (event)  at ( 3.0, 5.7) {事件驱动时刻\\窗口最早时刻 $\cup$\{06:00\}，上限 12 个};
+\node[boxp] (cover)  at ( 7.2, 5.7) {覆盖兜底\\未覆盖人员生成专属直达列};
+
+% ==================== 第二行：服务日入列 + 装载 + 剪枝 ====================
+\node[boxg] (svcday) at (-4.2, 4.0) {服务日入列\\$p$ 在 $D_p$ 每天均生成候选列};
+\node[boxg] (load)   at ( 0.0, 4.0) {EDF 双序满员装载\\非临时优先 + 临时填残座};
+\node[box]  (prune)  at ( 4.2, 4.0) {列池剪枝\\(40,10) $\to$ 约 7 万列};
+
+% ==================== 第三行：按天解耦 + 逐日 MIP ====================
+\node[boxteal] (decouple) at (-3.6, 2.3) {按天解耦\\（定理 1）架次不跨天\\机队状态逐日重置};
+\node[box] (mip) at ( 0.6, 2.3) {阶段一渐进式 MILP\\RelGap $0.05\!\to\!0.035$\\warm-start 早停};
+\node[boxg]   (assign)    at ( 4.8, 2.3) {逐日飞机指派\\贪心按起飞时刻分配\\并发约束保证 0 失败};
+
+% ==================== 阶段一输出 ====================
+\node[boxg] (tstar) at (0, 1.0) {汇总 $T^* = \sum_{d=1}^{7} T^*_d$（每日日预算 $T^*_d$）};
+
+% ==================== 阶段二标题 ====================
+\node[font=\small\bfseries, fill=orange!15, draw, rounded corners, minimum width=14cm, minimum height=0.5cm] (s2) at (0, -0.4) {阶段二：临时任务加入（160 人，$T \le T^*$）};
+
+% ==================== 阶段二流程（逐日） ====================
+\node[boxo, below=0.4cm of s2, xshift=-3.6cm] (day_cols) {逐日列裁剪\\当日可行临时需求};
+\node[boxo, below=0.4cm of s2]                 (prize)    {逐日 prize-collecting MIP\\$\max \sum z_p$，日预算 $T^*_d$};
+\node[boxo, below=0.4cm of s2, xshift= 3.6cm] (rerun)    {阶段一架次作保底列\\注入 MIP start 恒有可行解};
+
+% ==================== 最终输出 ====================
+\node[boxr, below=0.6cm of prize] (output) {输出 q3-routes / q3-assignments\\（3840 全覆盖，临时 93/160 按预算承运）\\七类硬约束验证零违规};
+
+% ==================== 主箭头 ====================
+% 第一行内部
+\draw[arrow] (window) -- (seq);
+\draw[arrow] (seq)    -- (event);
+\draw[arrow] (event)  -- (cover);
+
+% 第一行 → 第二行
+\draw[arrow] (window.south)  -- ++(0,-0.4) -| (svcday.north);
+\draw[arrow] (event.south)   -- ++(0,-0.20) -| (load.north);
+\draw[arrow] (cover.south)   -- ++(0,-0.4) -| (prune.north);
+
+% 第二行内部
+\draw[arrow] (svcday) -- (load);
+\draw[arrow] (load)   -- (prune);
+
+% 第二行 → 第三行
+\draw[arrow] (prune.south)    -- ++(0,-0.3) -| (mip.north);
+\draw[arrow] (svcday.south)   -- ++(0,-0.3) -| (decouple.north);
+
+% 第三行内部
+\draw[arrow] (decouple) -- (mip);
+\draw[arrow] (mip)      -- (assign);
+
+% 第三行 → 阶段一输出
+\draw[arrow] (assign.south) |- (tstar.east);
+\draw[arrow] (decouple.south) |- (tstar.west);
+
+% 阶段一输出 → 阶段二
+\draw[arrow] (tstar) -- (s2);
+
+% 阶段二内部
+\draw[arrow] (s2)       -- (day_cols);
+\draw[arrow] (s2)       -- (prize);
+\draw[arrow] (s2)       -- (rerun);
+\draw[arrow] (day_cols) -- (prize);
+\draw[arrow] (rerun)    -- (prize);
+
+% 阶段二 → 输出
+\draw[arrow] (prize) -- (output);
+
+% ==================== 覆盖兜底反馈 ====================
+\draw[darrow] (cover.south) -- ++(0,-0.4) -| (window.south);
+\node[font=\scriptsize, align=center, anchor=east] at (-5.4, 5.05) {缺失人员$\to$补列};
+
+\end{tikzpicture}
+\caption{问题三两阶段求解流程（服务日入列 + 事件驱动时刻 + 覆盖兜底 + 逐日 prize-collecting）}
+\label{fig:q3_flow}
+\end{figure}
