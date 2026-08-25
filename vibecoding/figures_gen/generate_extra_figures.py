@@ -345,13 +345,28 @@ def generate_g3_demand_time_distribution(data):
     task_counts = people['task_type'].value_counts()
     colors_pie = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
     wedges, texts, autotexts = ax4.pie(
-        task_counts.values, 
-        labels=task_counts.index, 
+        task_counts.values,
         autopct='%1.1f%%',
         colors=colors_pie[:len(task_counts)],
-        startangle=90
+        startangle=90,
+        pctdistance=0.6
     )
+    # emergency（占比最小，最后一个）标签往外推，避免和 temporary 重叠
+    emg_idx = len(task_counts) - 1
+    ex, ey = autotexts[emg_idx].get_position()
+    autotexts[emg_idx].set_position((ex, ey + 0.18))
     ax4.set_title('任务类型分布')
+    # 右侧统一图注：类型 + 数量
+    legend_labels = [
+        f'{t} ({c}条)' for t, c in task_counts.items()
+    ]
+    ax4.legend(
+        wedges, legend_labels,
+        loc='center left',
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+        title='任务类型'
+    )
     
     fig.suptitle('G3: 需求时间分布分析', fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
